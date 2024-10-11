@@ -50,7 +50,7 @@ func setResult(ctx context.Context, backend Backend, status protocol.Status, res
 		Status:    string(status),
 		Traceback: nil,
 		Result:    result,
-		Children:  nil,
+		Children:  []interface{}{},
 		DateDone:  time.Now().UTC().Format(time.RFC3339Nano),
 		Meta:      meta,
 	}
