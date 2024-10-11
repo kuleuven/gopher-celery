@@ -3,6 +3,7 @@
 package redis
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -43,6 +44,13 @@ func WithPool(pool *redis.Pool) BrokerOption {
 	}
 }
 
+// WithAcknowledgements sets Redis ack support.
+func WithAcknowledgements() BrokerOption {
+	return func(br *Broker) {
+		br.ack = true
+	}
+}
+
 // NewBroker creates a broker backed by Redis.
 // By default it connects to localhost.
 func NewBroker(options ...BrokerOption) *Broker {
@@ -68,15 +76,38 @@ type Broker struct {
 	pool           *redis.Pool
 	queues         []string
 	receiveTimeout int
+	ack            bool
 }
 
 // Send inserts the specified message at the head of the queue using LPUSH command.
 // Note, the method is safe to call concurrently.
-func (br *Broker) Send(m []byte, q string) error {
+func (br *Broker) Send(m []byte, q string, delivery_tag, exchange, routing_key string) error {
+	payload, err := json.Marshal([]interface{}{
+		m,
+		exchange,
+		routing_key,
+	})
+	if err != nil {
+		return err
+	}
+
 	conn := br.pool.Get()
 	defer conn.Close()
 
-	_, err := conn.Do("LPUSH", q, m)
+	conn.Send("LPUSH", q, m)
+
+	if br.ack {
+		conn.Send("ZADD", "unacked_index", time.Now().Unix(), delivery_tag)
+		conn.Send("HSET", "unacked", delivery_tag, string(payload))
+	}
+
+	err = conn.Flush()
+	if err != nil {
+		return err
+	}
+
+	_, err = conn.Receive()
+
 	return err
 }
 
@@ -119,4 +150,37 @@ func (br *Broker) Receive() ([]byte, error) {
 	b := res[1]
 	broker.Move2back(br.queues, q)
 	return b, nil
+}
+
+func (br *Broker) Ack(tag string) error {
+	if !br.ack {
+		return nil
+	}
+
+	conn := br.pool.Get()
+	defer conn.Close()
+
+	conn.Send("ZREM", "unacked_index", tag)
+	conn.Send("HDEL", "unacked", tag)
+
+	if err := conn.Flush(); err != nil {
+		return err
+	}
+
+	_, err := conn.Receive()
+
+	return err
+}
+
+func (br *Broker) ExtendLifetime(tag string) error {
+	if !br.ack {
+		return nil
+	}
+
+	conn := br.pool.Get()
+	defer conn.Close()
+
+	_, err := conn.Do("ZADD", "unacked_index", time.Now().Unix(), tag)
+
+	return err
 }

@@ -27,6 +27,9 @@ type Task struct {
 	// If not provided the message will never expire.
 	// The message will be expired when the message is received and the expiration date has been exceeded.
 	Expires time.Time
+	// DeliveryTag is a unique ack id of the message in UUID v4 format.
+	// If present, the message must be acked using this tag after the message is processed.
+	DeliveryTag string
 }
 
 // IsExpired returns true if the message is expired
@@ -110,11 +113,16 @@ type inboundMessage struct {
 	Body        string                 `json:"body"`
 	ContentType string                 `json:"content-type"`
 	Header      inboundMessageV2Header `json:"headers"`
+	Property    inboundMessageProperty `json:"properties"`
 }
 type inboundMessageV2Header struct {
 	ID      string    `json:"id"`
 	Task    string    `json:"task"`
 	Expires time.Time `json:"expires"`
+}
+
+type inboundMessageProperty struct {
+	DeliveryTag string `json:"delivery_tag"`
 }
 
 // Decode decodes the raw message and returns a task info.
@@ -140,6 +148,8 @@ func (r *SerializerRegistry) Decode(raw []byte) (*Task, error) {
 		t.Name = m.Header.Task
 		t.Expires = m.Header.Expires
 	}
+
+	t.DeliveryTag = m.Property.DeliveryTag
 
 	ser := r.serializers[m.ContentType]
 	if ser == nil {
@@ -203,6 +213,7 @@ type outboundMessageProperty struct {
 	// and 0 is the highest in Redis.
 	Priority int `json:"priority"`
 }
+
 type outboundMessageDeliveryInfo struct {
 	Exchange   string `json:"exchange"`
 	RoutingKey string `json:"routing_key"`
@@ -223,7 +234,7 @@ func (r *SerializerRegistry) encodeV1(body, queue, mime string, t *Task) ([]byte
 				RoutingKey: queue,
 			},
 			DeliveryMode: 2,
-			DeliveryTag:  r.uuid4(),
+			DeliveryTag:  t.DeliveryTag,
 		},
 	}
 
@@ -237,6 +248,7 @@ type outboundMessageV2 struct {
 	Header          outboundMessageV2Header `json:"headers"`
 	Property        outboundMessageProperty `json:"properties"`
 }
+
 type outboundMessageV2Header struct {
 	// Lang enables support for multiple languages.
 	// Worker may redirect the message to a worker that supports the language.
@@ -275,7 +287,7 @@ func (r *SerializerRegistry) encodeV2(body, queue, mime string, t *Task) ([]byte
 				RoutingKey: queue,
 			},
 			DeliveryMode: 2,
-			DeliveryTag:  r.uuid4(),
+			DeliveryTag:  t.DeliveryTag,
 		},
 	}
 	if !t.Expires.IsZero() {

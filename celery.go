@@ -30,7 +30,7 @@ type Middleware func(next TaskF) TaskF
 type Broker interface {
 	// Send puts a message to a queue.
 	// Note, the method is safe to call concurrently.
-	Send(msg []byte, queue string) error
+	Send(msg []byte, queue string, delivery_tag, exchange, routing_key string) error
 	// Observe sets the queues from which the tasks should be received.
 	// Note, the method is not concurrency safe.
 	Observe(queues []string)
@@ -38,6 +38,19 @@ type Broker interface {
 	// It blocks until there is a message available for consumption.
 	// Note, the method is not concurrency safe.
 	Receive() ([]byte, error)
+	// Ack acknowledges a task message. If messages are not acked,
+	// they will be redelivered after the visibility timeout.
+	Ack(tag string) error
+	// ExtendLifetime extends the visibility timeout of a task message.
+	ExtendLifetime(tag string) error
+}
+
+// Backend is responsible for storing and retrieving task results.
+type Backend interface {
+	// Store saves a task result.
+	Store(key string, value []byte) error
+	// Load loads a task result.
+	Load(key string) ([]byte, error)
 }
 
 // AsyncParam represents parameters for sending a task message.
@@ -110,18 +123,19 @@ func (a *App) Register(path, queue string, task TaskF) {
 // ApplyAsync sends a task message.
 func (a *App) ApplyAsync(path, queue string, p *AsyncParam) error {
 	m := protocol.Task{
-		ID:      uuid.NewString(),
-		Name:    path,
-		Args:    p.Args,
-		Kwargs:  p.Kwargs,
-		Expires: p.Expires,
+		ID:          uuid.NewString(),
+		Name:        path,
+		Args:        p.Args,
+		Kwargs:      p.Kwargs,
+		Expires:     p.Expires,
+		DeliveryTag: uuid.NewString(),
 	}
 	rawMsg, err := a.conf.registry.Encode(queue, a.conf.mime, a.conf.protocol, &m)
 	if err != nil {
 		return fmt.Errorf("failed to encode task message: %w", err)
 	}
 
-	if err = a.conf.broker.Send(rawMsg, queue); err != nil {
+	if err = a.conf.broker.Send(rawMsg, queue, m.DeliveryTag, queue, queue); err != nil {
 		return fmt.Errorf("failed to send task message to broker: %w", err)
 	}
 	return nil
@@ -131,18 +145,20 @@ func (a *App) ApplyAsync(path, queue string, p *AsyncParam) error {
 // i.e., it places the task associated with given Python path into queue.
 func (a *App) Delay(path, queue string, args ...interface{}) error {
 	m := protocol.Task{
-		ID:   uuid.NewString(),
-		Name: path,
-		Args: args,
+		ID:          uuid.NewString(),
+		Name:        path,
+		Args:        args,
+		DeliveryTag: uuid.NewString(),
 	}
 	rawMsg, err := a.conf.registry.Encode(queue, a.conf.mime, a.conf.protocol, &m)
 	if err != nil {
 		return fmt.Errorf("failed to encode task message: %w", err)
 	}
 
-	if err = a.conf.broker.Send(rawMsg, queue); err != nil {
+	if err = a.conf.broker.Send(rawMsg, queue, m.DeliveryTag, queue, queue); err != nil {
 		return fmt.Errorf("failed to send task message to broker: %w", err)
 	}
+
 	return nil
 }
 
@@ -223,7 +239,8 @@ func (a *App) Run(ctx context.Context) error {
 				} else {
 					level.Debug(a.conf.logger).Log("msg", "task succeeded", "name", m.Name)
 				}
-				return nil
+
+				return a.conf.broker.Ack(m.DeliveryTag)
 			})
 		}
 	}()

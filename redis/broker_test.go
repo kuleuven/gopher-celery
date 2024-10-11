@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
 )
 
 func TestReceive(t *testing.T) {
@@ -46,7 +47,7 @@ func TestReceive(t *testing.T) {
 			})
 
 			for _, m := range tc.input {
-				if err := br.Send([]byte(m), q); err != nil {
+				if err := br.Send([]byte(m), q, uuid.NewString(), q, q); err != nil {
 					t.Fatal(err)
 				}
 			}

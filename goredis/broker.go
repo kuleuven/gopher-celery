@@ -4,6 +4,7 @@ package goredis
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -36,6 +37,13 @@ func WithClient(c *redis.Client) BrokerOption {
 	}
 }
 
+// WithAcknowledgements sets Redis ack support.
+func WithAcknowledgements() BrokerOption {
+	return func(br *Broker) {
+		br.ack = true
+	}
+}
+
 // NewBroker creates a broker backed by Redis.
 // By default, it connects to localhost.
 func NewBroker(options ...BrokerOption) *Broker {
@@ -58,14 +66,38 @@ type Broker struct {
 	pool           *redis.Client
 	queues         []string
 	receiveTimeout time.Duration
+	ack            bool
 	ctx            context.Context
 }
 
 // Send inserts the specified message at the head of the queue using LPUSH command.
 // Note, the method is safe to call concurrently.
-func (br *Broker) Send(m []byte, q string) error {
-	res := br.pool.LPush(br.ctx, q, m)
-	return res.Err()
+func (br *Broker) Send(m []byte, q string, delivery_tag, exchange, routing_key string) error {
+	payload, err := json.Marshal([]interface{}{
+		m,
+		exchange,
+		routing_key,
+	})
+	if err != nil {
+		return err
+	}
+
+	pipe := br.pool.Pipeline()
+
+	pipe.LPush(br.ctx, q, m)
+
+	if br.ack {
+		pipe.ZAdd(br.ctx, "unacked_index", redis.Z{
+			Score:  float64(time.Now().Unix()),
+			Member: delivery_tag,
+		})
+
+		pipe.HSet(br.ctx, "unacked", delivery_tag, string(payload))
+	}
+
+	_, err = pipe.Exec(br.ctx)
+
+	return err
 }
 
 // Observe sets the queues from which the tasks should be received.
@@ -100,4 +132,33 @@ func (br *Broker) Receive() ([]byte, error) {
 	b := res.Val()[1]
 	broker.Move2back(br.queues, q)
 	return []byte(b), nil
+}
+
+func (br *Broker) Ack(tag string) error {
+	if !br.ack {
+		return nil
+	}
+
+	pipe := br.pool.Pipeline()
+
+	pipe.ZRem(br.ctx, "unacked_index", tag)
+	pipe.HDel(br.ctx, "unacked", tag)
+
+	_, err := pipe.Exec(br.ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (br *Broker) ExtendLifetime(tag string) error {
+	if !br.ack {
+		return nil
+	}
+
+	return br.pool.ZAdd(br.ctx, "unacked_index", redis.Z{
+		Score:  float64(time.Now().Unix()),
+		Member: tag,
+	}).Err()
 }

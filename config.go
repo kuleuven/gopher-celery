@@ -77,14 +77,23 @@ func WithMaxWorkers(n int) Option {
 }
 
 // WithMiddlewares sets a chain of task middlewares.
-// The first middleware is treated as the outermost middleware.
+// The first middleware passed as argument is treated as the outermost middleware.
+// If middlewares were configured previously, the new ones will be innermost.
 func WithMiddlewares(chain ...Middleware) Option {
 	return func(c *Config) {
+		prev := c.chain
+
+		if prev == nil {
+			c.chain = func(next TaskF) TaskF {
+				return next
+			}
+		}
+
 		c.chain = func(next TaskF) TaskF {
 			for i := len(chain) - 1; i >= 0; i-- {
 				next = chain[i](next)
 			}
-			return next
+			return prev(next)
 		}
 	}
 }
