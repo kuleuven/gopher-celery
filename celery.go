@@ -266,6 +266,9 @@ type contextKey int
 const (
 	// ContextKeyTaskName is a context key to access task names.
 	ContextKeyTaskName contextKey = iota
+
+	// ContextKeyMetaCallback is a context key to metadata setter callback.
+	ContextKeyMetaCallback
 )
 
 // executeTask calls the task function with args and kwargs from the message.

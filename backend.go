@@ -12,17 +12,25 @@ import (
 func WithBackend(backend Backend) Option {
 	return WithMiddlewares(func(f TaskF) TaskF {
 		return func(ctx context.Context, p *TaskParam) error {
-			if err := SetResult(ctx, backend, protocol.STARTED, nil); err != nil {
+			var meta map[string]interface{}
+
+			if err := setResult(ctx, backend, protocol.STARTED, nil, meta); err != nil {
 				return err
 			}
+
+			ctx = context.WithValue(ctx, ContextKeyMetaCallback, func(m map[string]interface{}) error {
+				meta = m
+
+				return setResult(ctx, backend, protocol.STARTED, nil, meta)
+			})
 
 			err := f(ctx, p)
 
 			if err == nil {
-				return SetResult(ctx, backend, protocol.SUCCESS, "All good")
+				return setResult(ctx, backend, protocol.SUCCESS, "All good", meta)
 			}
 
-			if err1 := SetResult(ctx, backend, protocol.FAILURE, err); err1 != nil {
+			if err1 := setResult(ctx, backend, protocol.FAILURE, err, meta); err1 != nil {
 				err = fmt.Errorf("%w, %s", err, err1)
 			}
 
@@ -31,7 +39,7 @@ func WithBackend(backend Backend) Option {
 	})
 }
 
-func SetResult(ctx context.Context, backend Backend, status protocol.Status, result interface{}) error {
+func setResult(ctx context.Context, backend Backend, status protocol.Status, result interface{}, meta map[string]interface{}) error {
 	taskID, ok := ctx.Value(ContextKeyTaskName).(string)
 	if !ok {
 		return nil
@@ -44,7 +52,7 @@ func SetResult(ctx context.Context, backend Backend, status protocol.Status, res
 		Result:    result,
 		Children:  nil,
 		DateDone:  time.Now().UTC().Format(time.RFC3339Nano),
-		Meta:      nil,
+		Meta:      meta,
 	}
 
 	payload, err := json.Marshal(msg)
@@ -53,4 +61,15 @@ func SetResult(ctx context.Context, backend Backend, status protocol.Status, res
 	}
 
 	return backend.Store(taskID, payload)
+}
+
+var ErrTypeAssertion = fmt.Errorf("type assertion failed")
+
+func SetMeta(ctx context.Context, m map[string]interface{}) error {
+	cb, ok := ctx.Value(ContextKeyMetaCallback).(func(m map[string]interface{}) error)
+	if !ok {
+		return ErrTypeAssertion
+	}
+
+	return cb(m)
 }
