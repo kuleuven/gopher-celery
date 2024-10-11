@@ -40,7 +40,7 @@ func WithBackend(backend Backend) Option {
 }
 
 func setResult(ctx context.Context, backend Backend, status protocol.Status, result interface{}, meta map[string]interface{}) error {
-	taskID, ok := ctx.Value(ContextKeyTaskName).(string)
+	taskID, ok := ctx.Value(ContextKeyTaskID).(string)
 	if !ok {
 		return nil
 	}

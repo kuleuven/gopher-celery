@@ -267,6 +267,9 @@ const (
 	// ContextKeyTaskName is a context key to access task names.
 	ContextKeyTaskName contextKey = iota
 
+	// ContextKeyTaskID is a context key to access task IDs.
+	ContextKeyTaskID
+
 	// ContextKeyMetaCallback is a context key to metadata setter callback.
 	ContextKeyMetaCallback
 )
@@ -288,6 +291,7 @@ func (a *App) executeTask(ctx context.Context, m *protocol.Task) (err error) {
 	}
 
 	ctx = context.WithValue(ctx, ContextKeyTaskName, m.Name)
+	ctx = context.WithValue(ctx, ContextKeyTaskID, m.ID)
 
 	p := NewTaskParam(m.Args, m.Kwargs)
 
