@@ -4,22 +4,15 @@ package goredis
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/marselester/gopher-celery/internal/broker"
 )
 
 // DefaultReceiveTimeout defines how many seconds the broker's Receive command
 // should block waiting for results from Redis.
 const DefaultReceiveTimeout = 5
-
-// DefaultVisibilityTimeout defines how long the broker's visibility timeout
-// is set to in seconds.
-const DefaultVisibilityTimeout = 3600
 
 // BrokerOption sets up a Broker.
 type BrokerOption func(*Broker)
@@ -34,14 +27,6 @@ func WithReceiveTimeout(timeout time.Duration) BrokerOption {
 	}
 }
 
-// WithVisibilityTimeout sets how long the broker's visibility timeout
-// is set to in seconds.
-func WithVisibilityTimeout(timeout time.Duration) BrokerOption {
-	return func(br *Broker) {
-		br.visibilityTimeout = timeout
-	}
-}
-
 // WithClient sets Redis client representing a pool of connections.
 func WithClient(c *redis.Client) BrokerOption {
 	return func(br *Broker) {
@@ -49,10 +34,15 @@ func WithClient(c *redis.Client) BrokerOption {
 	}
 }
 
-// WithAcknowledgements sets Redis ack support.
-func WithAcknowledgements() BrokerOption {
+// WithAcknowledgements makes sure tasks are not lost from redis if the worker
+// crashes during execution. A unique worker ID is required for this to work.
+// If multiple parallel workers are used, they should use different worker IDs.
+// Note that if a worker is gone, an external mechanism must be used to
+// restart the worker.
+func WithAcknowledgements(id int) BrokerOption {
 	return func(br *Broker) {
 		br.ack = true
+		br.workerID = id
 	}
 }
 
@@ -60,10 +50,11 @@ func WithAcknowledgements() BrokerOption {
 // By default, it connects to localhost.
 func NewBroker(options ...BrokerOption) *Broker {
 	br := Broker{
-		receiveTimeout:    DefaultReceiveTimeout * time.Second,
-		visibilityTimeout: DefaultVisibilityTimeout * time.Second,
-		ctx:               context.Background(),
+		receiveTimeout: DefaultReceiveTimeout * time.Second,
+		ctx:            context.Background(),
+		restored:       make(map[string][]string),
 	}
+
 	for _, opt := range options {
 		opt(&br)
 	}
@@ -71,124 +62,103 @@ func NewBroker(options ...BrokerOption) *Broker {
 	if br.pool == nil {
 		br.pool = redis.NewClient(&redis.Options{})
 	}
+
+	if !br.ack {
+		return &br
+	}
+
 	return &br
 }
 
 // Broker is a Redis broker that sends/receives messages from specified queues.
 type Broker struct {
-	pool              *redis.Client
-	queues            []string
-	receiveTimeout    time.Duration
-	visibilityTimeout time.Duration
-	ack               bool
-	ctx               context.Context
+	pool           *redis.Client
+	receiveTimeout time.Duration
+	ack            bool
+	workerID       int
+	ctx            context.Context
+	restored       map[string][]string
 }
 
 // Send inserts the specified message at the head of the queue using LPUSH command.
 // Note, the method is safe to call concurrently.
-func (br *Broker) Send(m []byte, q string, delivery_tag, exchange, routing_key string) error {
-	payload, err := json.Marshal([]interface{}{
-		m,
-		exchange,
-		routing_key,
-	})
-	if err != nil {
-		return err
-	}
-
-	pipe := br.pool.Pipeline()
-
-	pipe.LPush(br.ctx, q, m)
-
-	if br.ack {
-		pipe.ZAdd(br.ctx, "unacked_index", redis.Z{
-			Score:  float64(time.Now().Unix()),
-			Member: delivery_tag,
-		})
-
-		pipe.HSet(br.ctx, "unacked", delivery_tag, string(payload))
-	}
-
-	_, err = pipe.Exec(br.ctx)
-
-	return err
-}
-
-// Observe sets the queues from which the tasks should be received.
-// Note, the method is not concurrency safe.
-func (br *Broker) Observe(queues []string) {
-	br.queues = queues
+func (br *Broker) Send(m []byte, q string) error {
+	return br.pool.LPush(br.ctx, q, m).Err()
 }
 
 // Receive fetches a Celery task message from a tail of one of the queues in Redis.
 // After a timeout it returns nil, nil.
 //
-// Celery relies on BRPOP command to process messages fairly, see https://github.com/celery/kombu/issues/166.
-// Redis BRPOP is a blocking list pop primitive.
-// It blocks the connection when there are no elements to pop from any of the given lists.
-// An element is popped from the tail of the first list that is non-empty,
-// with the given keys being checked in the order that they are given,
-// see https://redis.io/commands/brpop/.
-//
 // Note, the method is not concurrency safe.
-func (br *Broker) Receive() ([]byte, error) {
-	res := br.pool.BRPop(br.ctx, br.receiveTimeout, br.queues...)
-	err := res.Err()
-	if err == redis.Nil {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to BRPOP %v: %w", br.queues, err)
+func (br *Broker) Receive(queue string) ([]byte, error) {
+	if br.ack {
+		if item, err := br.MaybeRestore(queue); err != nil || item != nil {
+			return item, err
+		}
+
+		res := br.pool.BLMove(br.ctx, queue, fmt.Sprintf("%s-unacked-%d", queue, br.workerID), "LEFT", "RIGHT", br.receiveTimeout)
+		if err := res.Err(); err == redis.Nil {
+			return nil, nil
+		} else if err != nil {
+			return nil, err
+		}
+
+		return []byte(res.Val()), nil
 	}
 
-	// Put the Celery queue name to the end of the slice for fair processing.
-	q := res.Val()[0]
-	b := res.Val()[1]
-	broker.Move2back(br.queues, q)
-	return []byte(b), nil
+	res := br.pool.BRPop(br.ctx, br.receiveTimeout, queue)
+	if err := res.Err(); err == redis.Nil {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	if len(res.Val()) != 2 {
+		return nil, fmt.Errorf("unexpected BRPOP result: %v", res.Val())
+	}
+
+	return []byte(res.Val()[1]), nil
 }
 
-func (br *Broker) Ack(tag string) error {
+func (br *Broker) MaybeRestore(queue string) ([]byte, error) {
+	if _, restored := br.restored[queue]; !restored {
+		values, err := br.pool.LRange(br.ctx, fmt.Sprintf("%s-unacked-%d", queue, br.workerID), 0, -1).Result()
+		if err != nil {
+			return nil, err
+		}
+
+		br.restored[queue] = values
+	}
+
+	if len(br.restored[queue]) == 0 {
+		return nil, nil
+	}
+
+	msg := br.restored[queue][0]
+
+	br.restored[queue] = br.restored[queue][1:]
+
+	return []byte(msg), nil
+}
+
+func (br *Broker) Ack(queue string, message []byte) error {
+	if !br.ack {
+		return nil
+	}
+
+	return br.pool.LRem(br.ctx, fmt.Sprintf("%s-unacked-%d", queue, br.workerID), 1, message).Err()
+}
+
+func (br *Broker) Reject(queue string, message []byte) error {
 	if !br.ack {
 		return nil
 	}
 
 	pipe := br.pool.Pipeline()
-
-	pipe.ZRem(br.ctx, "unacked_index", tag)
-	pipe.HDel(br.ctx, "unacked", tag)
+	pipe.LRem(br.ctx, fmt.Sprintf("%s-unacked-%d", queue, br.workerID), 1, message)
+	pipe.LPush(br.ctx, queue, message)
 
 	_, err := pipe.Exec(br.ctx)
-	if err != nil {
-		return err
-	}
 
-	return nil
-}
-
-func (br *Broker) ExtendLifetime(tag string) error {
-	if !br.ack {
-		return nil
-	}
-
-	return br.pool.ZAdd(br.ctx, "unacked_index", redis.Z{
-		Score:  float64(time.Now().Unix()),
-		Member: tag,
-	}).Err()
-}
-
-func (br *Broker) RefreshLifetime(tag string) func() bool {
-	timer := time.NewTimer(br.visibilityTimeout / 2)
-
-	go func() {
-		defer timer.Stop()
-
-		for range timer.C {
-			if err := br.ExtendLifetime(tag); err != nil {
-				return
-			}
-		}
-	}()
-
-	return timer.Stop
+	return err
 }

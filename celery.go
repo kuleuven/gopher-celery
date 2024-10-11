@@ -24,28 +24,27 @@ type TaskF func(ctx context.Context, p *TaskParam) error
 // For example, a caller can collect task metrics.
 type Middleware func(next TaskF) TaskF
 
+// DefaultQueue is the default queue name used by the app.
+var DefaultQueue = "celery"
+
 // Broker is responsible for receiving and sending task messages.
 // For example, it knows how to read a message from a given queue in Redis.
 // The messages can be in defferent formats depending on Celery protocol version.
 type Broker interface {
 	// Send puts a message to a queue.
 	// Note, the method is safe to call concurrently.
-	Send(msg []byte, queue string, delivery_tag, exchange, routing_key string) error
-	// Observe sets the queues from which the tasks should be received.
-	// Note, the method is not concurrency safe.
-	Observe(queues []string)
+	Send(msg []byte, queue string) error
 	// Receive returns a raw message from one of the queues.
 	// It blocks until there is a message available for consumption.
 	// Note, the method is not concurrency safe.
-	Receive() ([]byte, error)
+	Receive(queue string) ([]byte, error)
 	// Ack acknowledges a task message. If messages are not acked,
 	// they will be redelivered after the visibility timeout.
-	Ack(tag string) error
-	// ExtendLifetime makes sure the visibility timeout of a task message
-	// is extended during processing. It returns a cancel function. This
-	// function returns true if the refresh loop is stopped, false if
-	// it is was already stopped.
-	RefreshLifetime(tag string) func() bool
+	// Note, the method is safe to call concurrently.
+	Ack(queue string, message []byte) error
+	// Reject rejects a task message. It puts the message back to the queue.
+	// Note, the method is safe to call concurrently.
+	Reject(queue string, message []byte) error
 }
 
 // Backend is responsible for storing and retrieving task results.
@@ -80,14 +79,15 @@ func NewApp(options ...Option) *App {
 			mime:       protocol.MimeJSON,
 			protocol:   protocol.V2,
 			maxWorkers: DefaultMaxWorkers,
+			queue:      DefaultQueue,
 		},
-		task:      make(map[string]TaskF),
-		taskQueue: make(map[string]string),
+		task: make(map[string]TaskF),
 	}
 
 	for _, opt := range options {
 		opt(&app.conf)
 	}
+
 	app.sem = make(chan struct{}, app.conf.maxWorkers)
 
 	if app.conf.broker == nil {
@@ -105,42 +105,40 @@ type App struct {
 	// task maps a Celery task path to a task itself, e.g.,
 	// "myproject.apps.myapp.tasks.mytask": TaskF.
 	task map[string]TaskF
-	// taskQueue helps to determine which queue a task belongs to, e.g.,
-	// "myproject.apps.myapp.tasks.mytask": "important".
-	taskQueue map[string]string
+
 	// sem is a semaphore that limits number of workers.
 	sem chan struct{}
 }
 
-// Register associates the task with given Python path and queue.
+// Register associates the task with given Python path.
 // For example, when "myproject.apps.myapp.tasks.mytask"
-// is seen in "important" queue, the TaskF task is executed.
+// is seen, the TaskF task is executed.
 //
 // Note, the method is not concurrency safe.
 // The tasks mustn't be registered after the app starts processing tasks.
-func (a *App) Register(path, queue string, task TaskF) {
+func (a *App) Register(path string, task TaskF) {
 	a.task[path] = task
-	a.taskQueue[path] = queue
 }
 
 // ApplyAsync sends a task message.
 func (a *App) ApplyAsync(path, queue string, p *AsyncParam) error {
 	m := protocol.Task{
-		ID:          uuid.NewString(),
-		Name:        path,
-		Args:        p.Args,
-		Kwargs:      p.Kwargs,
-		Expires:     p.Expires,
-		DeliveryTag: uuid.NewString(),
+		ID:      uuid.NewString(),
+		Name:    path,
+		Args:    p.Args,
+		Kwargs:  p.Kwargs,
+		Expires: p.Expires,
 	}
+
 	rawMsg, err := a.conf.registry.Encode(queue, a.conf.mime, a.conf.protocol, &m)
 	if err != nil {
 		return fmt.Errorf("failed to encode task message: %w", err)
 	}
 
-	if err = a.conf.broker.Send(rawMsg, queue, m.DeliveryTag, queue, queue); err != nil {
+	if err = a.conf.broker.Send(rawMsg, queue); err != nil {
 		return fmt.Errorf("failed to send task message to broker: %w", err)
 	}
+
 	return nil
 }
 
@@ -148,17 +146,17 @@ func (a *App) ApplyAsync(path, queue string, p *AsyncParam) error {
 // i.e., it places the task associated with given Python path into queue.
 func (a *App) Delay(path, queue string, args ...interface{}) error {
 	m := protocol.Task{
-		ID:          uuid.NewString(),
-		Name:        path,
-		Args:        args,
-		DeliveryTag: uuid.NewString(),
+		ID:   uuid.NewString(),
+		Name: path,
+		Args: args,
 	}
+
 	rawMsg, err := a.conf.registry.Encode(queue, a.conf.mime, a.conf.protocol, &m)
 	if err != nil {
 		return fmt.Errorf("failed to encode task message: %w", err)
 	}
 
-	if err = a.conf.broker.Send(rawMsg, queue, m.DeliveryTag, queue, queue); err != nil {
+	if err = a.conf.broker.Send(rawMsg, queue); err != nil {
 		return fmt.Errorf("failed to send task message to broker: %w", err)
 	}
 
@@ -171,14 +169,10 @@ func (a *App) Delay(path, queue string, args ...interface{}) error {
 func (a *App) Run(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
 
-	qq := make([]string, 0, len(a.taskQueue))
-	for k := range a.taskQueue {
-		qq = append(qq, a.taskQueue[k])
-	}
-	a.conf.broker.Observe(qq)
-	level.Debug(a.conf.logger).Log("msg", "observing queues", "queues", qq)
+	level.Debug(a.conf.logger).Log("msg", "observing queue", "queue", a.conf.queue)
 
 	msgs := make(chan *protocol.Task, 1)
+
 	g.Go(func() error {
 		defer close(msgs)
 
@@ -191,73 +185,68 @@ func (a *App) Run(ctx context.Context) error {
 			case a.sem <- struct{}{}:
 			// Stop processing tasks.
 			case <-ctx.Done():
-				return nil
+				return ctx.Err()
 			}
 
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-				rawMsg, err := a.conf.broker.Receive()
-				if err != nil {
-					return fmt.Errorf("failed to receive a raw task message: %w", err)
-				}
-				// No messages in the broker so far.
-				if rawMsg == nil {
-					<-a.sem
-					continue
-				}
-
-				m, err := a.conf.registry.Decode(rawMsg)
-				if err != nil {
-					level.Error(a.conf.logger).Log("msg", "failed to decode task message", "rawmsg", rawMsg, "err", err)
-					<-a.sem
-					continue
-				}
-
-				msgs <- m
-			}
-		}
-	})
-
-	go func() {
-		// Start a worker when there is a task.
-		for m := range msgs {
-			level.Debug(a.conf.logger).Log("msg", "task received", "name", m.Name)
-
-			if a.task[m.Name] == nil {
-				level.Debug(a.conf.logger).Log("msg", "unregistered task", "name", m.Name)
-
-				<-a.sem
-
-				continue
+			raw, msg, err := a.receive(ctx)
+			if err != nil {
+				return err
 			}
 
-			if m.IsExpired() {
-				level.Debug(a.conf.logger).Log("msg", "task message expired", "name", m.Name)
-
-				<-a.sem
-
-				continue
-			}
-
-			m := m
 			g.Go(func() error {
 				// Release a semaphore by discarding a token.
 				defer func() { <-a.sem }()
 
-				if err := a.executeTask(ctx, m); err != nil {
-					level.Error(a.conf.logger).Log("msg", "task failed", "taskmsg", m, "err", err)
+				if err := a.executeTask(ctx, msg); err != nil {
+					level.Error(a.conf.logger).Log("msg", "task failed", "name", msg.Name, "err", err)
 				} else {
-					level.Debug(a.conf.logger).Log("msg", "task succeeded", "name", m.Name)
+					level.Debug(a.conf.logger).Log("msg", "task succeeded", "name", msg.Name)
 				}
 
-				return a.conf.broker.Ack(m.DeliveryTag)
+				return a.conf.broker.Ack(a.conf.queue, raw)
 			})
 		}
-	}()
+	})
 
 	return g.Wait()
+}
+
+func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
+	for {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+
+		raw, err := a.conf.broker.Receive(a.conf.queue)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to receive a raw task message: %w", err)
+		}
+
+		if raw == nil {
+			continue
+		}
+
+		msg, err := a.conf.registry.Decode(raw)
+		if err != nil {
+			level.Error(a.conf.logger).Log("msg", "failed to decode task message", "rawmsg", raw, "err", err)
+
+			continue
+		}
+
+		if a.task[msg.Name] == nil {
+			level.Debug(a.conf.logger).Log("msg", "unregistered task", "name", msg.Name)
+
+			continue
+		}
+
+		if msg.IsExpired() {
+			level.Debug(a.conf.logger).Log("msg", "task message expired", "name", msg.Name)
+
+			continue
+		}
+
+		return raw, msg, nil
+	}
 }
 
 type contextKey int
@@ -270,10 +259,6 @@ const (
 // executeTask calls the task function with args and kwargs from the message.
 // If the task panics, the stack trace is returned as an error.
 func (a *App) executeTask(ctx context.Context, m *protocol.Task) (err error) {
-	cancel := a.conf.broker.RefreshLifetime(m.DeliveryTag)
-
-	defer cancel()
-
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("unexpected task error: %v: %s", r, debug.Stack())
@@ -281,12 +266,14 @@ func (a *App) executeTask(ctx context.Context, m *protocol.Task) (err error) {
 	}()
 
 	task := a.task[m.Name]
+
 	// Use middlewares if a client provided them.
 	if a.conf.chain != nil {
 		task = a.conf.chain(task)
 	}
 
 	ctx = context.WithValue(ctx, ContextKeyTaskName, m.Name)
+
 	p := NewTaskParam(m.Args, m.Kwargs)
 
 	return task(ctx, p)

@@ -68,6 +68,13 @@ func WithLogger(logger log.Logger) Option {
 	}
 }
 
+// WithQueue sets the name of the Celery queue.
+func WithQueue(name string) Option {
+	return func(c *Config) {
+		c.queue = name
+	}
+}
+
 // WithMaxWorkers sets an upper limit of goroutines
 // allowed to process Celery tasks.
 func WithMaxWorkers(n int) Option {
@@ -84,7 +91,7 @@ func WithMiddlewares(chain ...Middleware) Option {
 		prev := c.chain
 
 		if prev == nil {
-			c.chain = func(next TaskF) TaskF {
+			prev = func(next TaskF) TaskF {
 				return next
 			}
 		}
@@ -93,6 +100,7 @@ func WithMiddlewares(chain ...Middleware) Option {
 			for i := len(chain) - 1; i >= 0; i-- {
 				next = chain[i](next)
 			}
+
 			return prev(next)
 		}
 	}
@@ -102,6 +110,7 @@ func WithMiddlewares(chain ...Middleware) Option {
 type Config struct {
 	logger     log.Logger
 	broker     Broker
+	queue      string
 	registry   *protocol.SerializerRegistry
 	mime       string
 	protocol   int

@@ -2,6 +2,7 @@ package celery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -19,7 +20,6 @@ func TestExecuteTaskPanic(t *testing.T) {
 	app := NewApp()
 	app.Register(
 		"myproject.apps.myapp.tasks.mytask",
-		"important",
 		func(ctx context.Context, p *TaskParam) error {
 			_ = p.Args()[100]
 			return nil
@@ -106,7 +106,6 @@ func TestExecuteTaskMiddlewares(t *testing.T) {
 			)
 			app.Register(
 				"myproject.apps.myapp.tasks.mytask",
-				"important",
 				func(ctx context.Context, p *TaskParam) error {
 					return fmt.Errorf("task")
 				},
@@ -124,7 +123,7 @@ func TestProduceAndConsume(t *testing.T) {
 	app := NewApp(WithLogger(log.NewJSONLogger(os.Stderr)))
 	err := app.Delay(
 		"myproject.apps.myapp.tasks.mytask",
-		"important",
+		DefaultQueue,
 		2,
 		3,
 	)
@@ -133,13 +132,12 @@ func TestProduceAndConsume(t *testing.T) {
 	}
 
 	// The test finishes either when ctx times out or the task finishes.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 
 	var sum int
 	app.Register(
 		"myproject.apps.myapp.tasks.mytask",
-		"important",
 		func(ctx context.Context, p *TaskParam) error {
 			defer cancel()
 
@@ -148,7 +146,7 @@ func TestProduceAndConsume(t *testing.T) {
 			return nil
 		},
 	)
-	if err := app.Run(ctx); err != nil {
+	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		t.Error(err)
 	}
 
@@ -163,7 +161,7 @@ func TestProduceAndConsume100times(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		err := app.Delay(
 			"myproject.apps.myapp.tasks.mytask",
-			"important",
+			DefaultQueue,
 			2,
 			3,
 		)
@@ -179,7 +177,6 @@ func TestProduceAndConsume100times(t *testing.T) {
 	var sum int32
 	app.Register(
 		"myproject.apps.myapp.tasks.mytask",
-		"important",
 		func(ctx context.Context, p *TaskParam) error {
 			p.NameArgs("a", "b")
 			atomic.AddInt32(
@@ -189,7 +186,7 @@ func TestProduceAndConsume100times(t *testing.T) {
 			return nil
 		},
 	)
-	if err := app.Run(ctx); err != nil {
+	if err := app.Run(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		t.Error(err)
 	}
 
@@ -207,7 +204,7 @@ func TestGoredisProduceAndConsume100times(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		err := app.Delay(
 			"myproject.apps.myapp.tasks.mytask",
-			"important",
+			DefaultQueue,
 			2,
 			3,
 		)
@@ -223,7 +220,6 @@ func TestGoredisProduceAndConsume100times(t *testing.T) {
 	var sum int32
 	app.Register(
 		"myproject.apps.myapp.tasks.mytask",
-		"important",
 		func(ctx context.Context, p *TaskParam) error {
 			p.NameArgs("a", "b")
 			atomic.AddInt32(
@@ -233,7 +229,7 @@ func TestGoredisProduceAndConsume100times(t *testing.T) {
 			return nil
 		},
 	)
-	if err := app.Run(ctx); err != nil {
+	if err := app.Run(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		t.Error(err)
 	}
 

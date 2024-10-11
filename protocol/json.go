@@ -47,6 +47,7 @@ func (ser *JSONSerializer) Decode(p int, s string, t *Task) error {
 	switch p {
 	case V1:
 		var body jsonInboundV1Body
+
 		if err := json.Unmarshal(b, &body); err != nil {
 			return fmt.Errorf("json decode: %w", err)
 		}
@@ -58,13 +59,16 @@ func (ser *JSONSerializer) Decode(p int, s string, t *Task) error {
 		t.Expires = body.Expires
 	case V2:
 		var a [3]interface{}
+
 		if err := json.Unmarshal(b, &a); err != nil {
 			return fmt.Errorf("json decode: %w", err)
 		}
+
 		args, ok := a[0].([]interface{})
 		if !ok {
 			return fmt.Errorf("expected args: %v", a[0])
 		}
+
 		kwargs, ok := a[1].(map[string]interface{})
 		if !ok {
 			return fmt.Errorf("expected kwargs: %v", a[1])
@@ -84,6 +88,7 @@ func (ser *JSONSerializer) Encode(p int, t *Task) (s string, err error) {
 	if p == V1 {
 		return ser.encodeV1(t)
 	}
+
 	return ser.encodeV2(t)
 }
 
@@ -113,20 +118,24 @@ func (ser *JSONSerializer) encodeV1(t *Task) (s string, err error) {
 		ETA:    ser.now().Format(time.RFC3339),
 		UTC:    true,
 	}
+
 	if t.Args == nil {
 		v.Args = make([]interface{}, 0)
 	}
+
 	if t.Kwargs != nil {
 		if v.Kwargs, err = json.Marshal(t.Kwargs); err != nil {
 			return "", fmt.Errorf("kwargs json encode: %w", err)
 		}
 	}
+
 	if !t.Expires.IsZero() {
 		s := t.Expires.Format(time.RFC3339)
 		v.Expires = &s
 	}
 
 	buf := ser.pool.Get().(*bytes.Buffer)
+
 	defer func() {
 		buf.Reset()
 		ser.pool.Put(buf)
@@ -154,14 +163,17 @@ func (ser *JSONSerializer) encodeV2(t *Task) (s string, err error) {
 	}
 
 	buf := ser.pool.Get().(*bytes.Buffer)
+
 	defer func() {
 		buf.Reset()
 		ser.pool.Put(buf)
 	}()
 
 	buf.WriteRune('[')
+
 	{
 		js := json.NewEncoder(buf)
+
 		if t.Args == nil {
 			buf.WriteString("[]")
 		} else if err = js.Encode(t.Args); err != nil {
@@ -180,6 +192,7 @@ func (ser *JSONSerializer) encodeV2(t *Task) (s string, err error) {
 
 		buf.WriteString(jsonV2opts)
 	}
+
 	buf.WriteRune(']')
 
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil

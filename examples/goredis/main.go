@@ -40,10 +40,10 @@ func main() {
 	app := celery.NewApp(
 		celery.WithBroker(broker),
 		celery.WithLogger(logger),
+		celery.WithQueue("important"),
 	)
 	app.Register(
 		"myproject.mytask",
-		"important",
 		func(ctx context.Context, p *celery.TaskParam) error {
 			p.NameArgs("a", "b")
 			fmt.Printf("received a=%s b=%s\n", p.MustString("a"), p.MustString("b"))

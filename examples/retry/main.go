@@ -25,10 +25,10 @@ func main() {
 
 	app := celery.NewApp(
 		celery.WithLogger(logger),
+		celery.WithQueue("important"),
 	)
 	app.Register(
 		"myproject.mytask",
-		"important",
 		r.request,
 	)
 

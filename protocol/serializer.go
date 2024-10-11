@@ -27,9 +27,6 @@ type Task struct {
 	// If not provided the message will never expire.
 	// The message will be expired when the message is received and the expiration date has been exceeded.
 	Expires time.Time
-	// DeliveryTag is a unique ack id of the message in UUID v4 format.
-	// If present, the message must be acked using this tag after the message is processed.
-	DeliveryTag string
 }
 
 // IsExpired returns true if the message is expired
@@ -113,16 +110,12 @@ type inboundMessage struct {
 	Body        string                 `json:"body"`
 	ContentType string                 `json:"content-type"`
 	Header      inboundMessageV2Header `json:"headers"`
-	Property    inboundMessageProperty `json:"properties"`
 }
+
 type inboundMessageV2Header struct {
 	ID      string    `json:"id"`
 	Task    string    `json:"task"`
 	Expires time.Time `json:"expires"`
-}
-
-type inboundMessageProperty struct {
-	DeliveryTag string `json:"delivery_tag"`
 }
 
 // Decode decodes the raw message and returns a task info.
@@ -130,6 +123,7 @@ type inboundMessageProperty struct {
 // Otherwise the protocol v2 is used.
 func (r *SerializerRegistry) Decode(raw []byte) (*Task, error) {
 	var m inboundMessage
+
 	err := json.Unmarshal(raw, &m)
 	if err != nil {
 		return nil, fmt.Errorf("json decode: %w", err)
@@ -139,6 +133,7 @@ func (r *SerializerRegistry) Decode(raw []byte) (*Task, error) {
 		prot int
 		t    Task
 	)
+
 	// Protocol version is detected by the presence of a task message header.
 	if m.Header.Task == "" {
 		prot = V1
@@ -149,15 +144,15 @@ func (r *SerializerRegistry) Decode(raw []byte) (*Task, error) {
 		t.Expires = m.Header.Expires
 	}
 
-	t.DeliveryTag = m.Property.DeliveryTag
-
 	ser := r.serializers[m.ContentType]
 	if ser == nil {
 		return nil, fmt.Errorf("unregistered serializer: %s", m.ContentType)
 	}
+
 	if err = ser.Decode(prot, m.Body, &t); err != nil {
 		return nil, fmt.Errorf("parsing body v%d: %w", prot, err)
 	}
+
 	if t.Name == "" {
 		return nil, fmt.Errorf("missing task name")
 	}
@@ -172,9 +167,11 @@ func (r *SerializerRegistry) Encode(queue, mime string, prot int, t *Task) ([]by
 	}
 
 	ser := r.serializers[mime]
+
 	if ser == nil {
 		return nil, fmt.Errorf("unregistered serializer %s", mime)
 	}
+
 	if r.encoding[mime] == "" {
 		return nil, fmt.Errorf("unregistered serializer encoding %s", mime)
 	}
@@ -186,9 +183,9 @@ func (r *SerializerRegistry) Encode(queue, mime string, prot int, t *Task) ([]by
 
 	if prot == V1 {
 		return r.encodeV1(body, queue, mime, t)
-	} else {
-		return r.encodeV2(body, queue, mime, t)
 	}
+
+	return r.encodeV2(body, queue, mime, t)
 }
 
 // jsonEmptyMap helps to reduce allocs when encoding empty maps in json.
@@ -234,7 +231,7 @@ func (r *SerializerRegistry) encodeV1(body, queue, mime string, t *Task) ([]byte
 				RoutingKey: queue,
 			},
 			DeliveryMode: 2,
-			DeliveryTag:  t.DeliveryTag,
+			DeliveryTag:  r.uuid4(),
 		},
 	}
 
@@ -287,9 +284,10 @@ func (r *SerializerRegistry) encodeV2(body, queue, mime string, t *Task) ([]byte
 				RoutingKey: queue,
 			},
 			DeliveryMode: 2,
-			DeliveryTag:  t.DeliveryTag,
+			DeliveryTag:  r.uuid4(),
 		},
 	}
+
 	if !t.Expires.IsZero() {
 		s := t.Expires.Format(time.RFC3339)
 		m.Header.Expires = &s

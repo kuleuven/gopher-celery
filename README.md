@@ -7,10 +7,6 @@ The objective of this project is to provide
 the very basic mechanism to efficiently produce and consume Celery tasks on Go side.
 Therefore there are no plans to support all the rich features the Python version provides,
 such as tasks chains, etc.
-Even task result backend has no practical value in the context of Gopher Celery,
-so it wasn't taken into account.
-Note, Celery has [no result backend](https://docs.celeryq.dev/en/stable/userguide/tasks.html?#result-backends)
-enabled by default (it incurs overhead).
 
 Typically one would want to use Gopher Celery when certain tasks on Python side
 take too long to complete or there is a big volume of tasks requiring lots of Python workers
@@ -18,6 +14,9 @@ take too long to complete or there is a big volume of tasks requiring lots of Py
 
 This project offers a little bit more convenient API of https://github.com/gocelery/gocelery
 including support for Celery protocol v2.
+
+This fork of https://github.com/marselester/gopher-celery adds support for a celery result backend,
+and uses LMOVE to recover tasks in case of crashes. To support this, only a single queue is used.
 
 ## Usage
 
@@ -35,10 +34,9 @@ the Go function is executed with args and kwargs obtained from the task message.
 By default Redis broker (localhost) is used with json task message serialization.
 
 ```go
-app := celery.NewApp()
+app := celery.NewApp(WithQueue("important"))
 app.Register(
 	"myproject.apps.myapp.tasks.mytask",
-	"important",
 	func(ctx context.Context, p *celery.TaskParam) error {
 		p.NameArgs("a", "b")
 		// Methods prefixed with Must panic if they can't find an argument name
@@ -59,10 +57,9 @@ If a task is processed on Python side,
 you don't need to register the task or run the app.
 
 ```go
-app := celery.NewApp()
+app := celery.NewApp(WithQueue("important"))
 err := app.Delay(
 	"myproject.apps.myapp.tasks.mytask",
-	"important",
 	2,
 	3,
 )
