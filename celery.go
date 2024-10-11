@@ -184,6 +184,14 @@ func (a *App) Run(ctx context.Context) error {
 		// usually take seconds/minutes to complete.
 		for {
 			select {
+			// Acquire a semaphore by sending a token.
+			case a.sem <- struct{}{}:
+			// Stop processing tasks.
+			case <-ctx.Done():
+				return nil
+			}
+
+			select {
 			case <-ctx.Done():
 				return nil
 			default:
@@ -193,12 +201,14 @@ func (a *App) Run(ctx context.Context) error {
 				}
 				// No messages in the broker so far.
 				if rawMsg == nil {
+					<-a.sem
 					continue
 				}
 
 				m, err := a.conf.registry.Decode(rawMsg)
 				if err != nil {
 					level.Error(a.conf.logger).Log("msg", "failed to decode task message", "rawmsg", rawMsg, "err", err)
+					<-a.sem
 					continue
 				}
 
@@ -214,19 +224,18 @@ func (a *App) Run(ctx context.Context) error {
 
 			if a.task[m.Name] == nil {
 				level.Debug(a.conf.logger).Log("msg", "unregistered task", "name", m.Name)
-				continue
-			}
-			if m.IsExpired() {
-				level.Debug(a.conf.logger).Log("msg", "task message expired", "name", m.Name)
+
+				<-a.sem
+
 				continue
 			}
 
-			select {
-			// Acquire a semaphore by sending a token.
-			case a.sem <- struct{}{}:
-			// Stop processing tasks.
-			case <-ctx.Done():
-				return
+			if m.IsExpired() {
+				level.Debug(a.conf.logger).Log("msg", "task message expired", "name", m.Name)
+
+				<-a.sem
+
+				continue
 			}
 
 			m := m
