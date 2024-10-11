@@ -16,6 +16,10 @@ import (
 // should block waiting for results from Redis.
 const DefaultReceiveTimeout = 5
 
+// DefaultVisibilityTimeout defines how long the broker's visibility timeout
+// is set to in seconds.
+const DefaultVisibilityTimeout = 3600
+
 // BrokerOption sets up a Broker.
 type BrokerOption func(*Broker)
 
@@ -37,6 +41,14 @@ func WithReceiveTimeout(timeout time.Duration) BrokerOption {
 	}
 }
 
+// WithVisibilityTimeout sets how long the broker's visibility timeout
+// is set to in seconds.
+func WithVisibilityTimeout(timeout time.Duration) BrokerOption {
+	return func(br *Broker) {
+		br.visibilityTimeout = timeout
+	}
+}
+
 // WithPool sets Redis connection pool.
 func WithPool(pool *redis.Pool) BrokerOption {
 	return func(br *Broker) {
@@ -55,7 +67,8 @@ func WithAcknowledgements() BrokerOption {
 // By default it connects to localhost.
 func NewBroker(options ...BrokerOption) *Broker {
 	br := Broker{
-		receiveTimeout: DefaultReceiveTimeout,
+		receiveTimeout:    DefaultReceiveTimeout,
+		visibilityTimeout: DefaultVisibilityTimeout * time.Second,
 	}
 	for _, opt := range options {
 		opt(&br)
@@ -73,10 +86,11 @@ func NewBroker(options ...BrokerOption) *Broker {
 
 // Broker is a Redis broker that sends/receives messages from specified queues.
 type Broker struct {
-	pool           *redis.Pool
-	queues         []string
-	receiveTimeout int
-	ack            bool
+	pool              *redis.Pool
+	queues            []string
+	receiveTimeout    int
+	visibilityTimeout time.Duration
+	ack               bool
 }
 
 // Send inserts the specified message at the head of the queue using LPUSH command.
@@ -183,4 +197,20 @@ func (br *Broker) ExtendLifetime(tag string) error {
 	_, err := conn.Do("ZADD", "unacked_index", time.Now().Unix(), tag)
 
 	return err
+}
+
+func (br *Broker) RefreshLifetime(tag string) func() bool {
+	timer := time.NewTimer(br.visibilityTimeout / 2)
+
+	go func() {
+		defer timer.Stop()
+
+		for range timer.C {
+			if err := br.ExtendLifetime(tag); err != nil {
+				return
+			}
+		}
+	}()
+
+	return timer.Stop
 }

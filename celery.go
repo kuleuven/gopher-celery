@@ -41,8 +41,11 @@ type Broker interface {
 	// Ack acknowledges a task message. If messages are not acked,
 	// they will be redelivered after the visibility timeout.
 	Ack(tag string) error
-	// ExtendLifetime extends the visibility timeout of a task message.
-	ExtendLifetime(tag string) error
+	// ExtendLifetime makes sure the visibility timeout of a task message
+	// is extended during processing. It returns a cancel function. This
+	// function returns true if the refresh loop is stopped, false if
+	// it is was already stopped.
+	RefreshLifetime(tag string) func() bool
 }
 
 // Backend is responsible for storing and retrieving task results.
@@ -267,6 +270,10 @@ const (
 // executeTask calls the task function with args and kwargs from the message.
 // If the task panics, the stack trace is returned as an error.
 func (a *App) executeTask(ctx context.Context, m *protocol.Task) (err error) {
+	cancel := a.conf.broker.RefreshLifetime(m.DeliveryTag)
+
+	defer cancel()
+
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("unexpected task error: %v: %s", r, debug.Stack())
@@ -281,5 +288,6 @@ func (a *App) executeTask(ctx context.Context, m *protocol.Task) (err error) {
 
 	ctx = context.WithValue(ctx, ContextKeyTaskName, m.Name)
 	p := NewTaskParam(m.Args, m.Kwargs)
+
 	return task(ctx, p)
 }
