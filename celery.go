@@ -230,17 +230,29 @@ func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
 		if err != nil {
 			level.Error(a.conf.logger).Log("msg", "failed to decode task message", "rawmsg", raw, "err", err)
 
+			if err1 := a.conf.broker.Ack(a.conf.queue, raw); err1 != nil {
+				return nil, nil, err1
+			}
+
 			continue
 		}
 
 		if a.task[msg.Name] == nil {
 			level.Debug(a.conf.logger).Log("msg", "unregistered task", "name", msg.Name)
 
+			if err1 := a.conf.broker.Ack(a.conf.queue, raw); err1 != nil {
+				return nil, nil, err1
+			}
+
 			continue
 		}
 
 		if msg.IsExpired() {
 			level.Debug(a.conf.logger).Log("msg", "task message expired", "name", msg.Name)
+
+			if err1 := a.conf.broker.Ack(a.conf.queue, raw); err1 != nil {
+				return nil, nil, err1
+			}
 
 			continue
 		}
