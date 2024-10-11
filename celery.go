@@ -270,8 +270,8 @@ const (
 	// ContextKeyTaskID is a context key to access task IDs.
 	ContextKeyTaskID
 
-	// ContextKeyMetaCallback is a context key to metadata setter callback.
-	ContextKeyMetaCallback
+	// ContextKeyUpdateStateCallback is a context key to retrieve a callback to update the state.
+	ContextKeyUpdateStateCallback
 )
 
 // executeTask calls the task function with args and kwargs from the message.

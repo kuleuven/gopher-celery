@@ -12,25 +12,21 @@ import (
 func WithBackend(backend Backend) Option {
 	return WithMiddlewares(func(f TaskF) TaskF {
 		return func(ctx context.Context, p *TaskParam) error {
-			var meta map[string]interface{}
-
-			if err := setResult(ctx, backend, protocol.STARTED, nil, meta); err != nil {
+			if err := setResult(ctx, backend, protocol.STARTED, nil); err != nil {
 				return err
 			}
 
-			ctx = context.WithValue(ctx, ContextKeyMetaCallback, func(m map[string]interface{}) error {
-				meta = m
-
-				return setResult(ctx, backend, protocol.STARTED, nil, meta)
+			ctx = context.WithValue(ctx, ContextKeyUpdateStateCallback, func(status protocol.Status, meta map[string]interface{}) error {
+				return setResult(ctx, backend, status, meta)
 			})
 
 			err := f(ctx, p)
 
 			if err == nil {
-				return setResult(ctx, backend, protocol.SUCCESS, "All good", meta)
+				return setResult(ctx, backend, protocol.SUCCESS, "All good")
 			}
 
-			if err1 := setResult(ctx, backend, protocol.FAILURE, err, meta); err1 != nil {
+			if err1 := setResult(ctx, backend, protocol.FAILURE, err.Error()); err1 != nil {
 				err = fmt.Errorf("%w, %s", err, err1)
 			}
 
@@ -39,7 +35,7 @@ func WithBackend(backend Backend) Option {
 	})
 }
 
-func setResult(ctx context.Context, backend Backend, status protocol.Status, result interface{}, meta map[string]interface{}) error {
+func setResult(ctx context.Context, backend Backend, status protocol.Status, result interface{}) error {
 	taskID, ok := ctx.Value(ContextKeyTaskID).(string)
 	if !ok {
 		return nil
@@ -52,7 +48,6 @@ func setResult(ctx context.Context, backend Backend, status protocol.Status, res
 		Result:    result,
 		Children:  []interface{}{},
 		DateDone:  time.Now().UTC().Format(time.RFC3339Nano),
-		Meta:      meta,
 	}
 
 	payload, err := json.Marshal(msg)
@@ -65,11 +60,11 @@ func setResult(ctx context.Context, backend Backend, status protocol.Status, res
 
 var ErrTypeAssertion = fmt.Errorf("type assertion failed")
 
-func SetMeta(ctx context.Context, m map[string]interface{}) error {
-	cb, ok := ctx.Value(ContextKeyMetaCallback).(func(m map[string]interface{}) error)
+func UpdateState(ctx context.Context, status protocol.Status, meta map[string]interface{}) error {
+	cb, ok := ctx.Value(ContextKeyUpdateStateCallback).(func(protocol.Status, map[string]interface{}) error)
 	if !ok {
 		return ErrTypeAssertion
 	}
 
-	return cb(m)
+	return cb(status, meta)
 }
