@@ -4,7 +4,6 @@ package celery
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
 	"time"
 
 	"github.com/go-kit/log"
@@ -303,15 +302,5 @@ func (a *App) executeTask(ctx context.Context, m *protocol.Task) error {
 
 	p := NewTaskParam(m.Args, m.Kwargs)
 
-	return call(ctx, task, p)
-}
-
-func call(ctx context.Context, f TaskF, p *TaskParam) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("unexpected task error: %v: %s", r, debug.Stack())
-		}
-	}()
-
-	return f(ctx, p)
+	return task(ctx, p)
 }

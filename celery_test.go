@@ -17,7 +17,7 @@ import (
 )
 
 func TestExecuteTaskPanic(t *testing.T) {
-	app := NewApp()
+	app := NewApp(WithMiddlewares(RecoverMiddleware))
 	app.Register(
 		"myproject.apps.myapp.tasks.mytask",
 		func(ctx context.Context, p *TaskParam) error {
@@ -83,10 +83,6 @@ func TestExecuteTaskMiddlewares(t *testing.T) {
 		"nil chain": {
 			middlewares: nil,
 			want:        "task",
-		},
-		"nil middleware panic": {
-			middlewares: []Middleware{nil},
-			want:        "unexpected task error",
 		},
 	}
 
@@ -236,5 +232,49 @@ func TestGoredisProduceAndConsume100times(t *testing.T) {
 	var want int32 = 500
 	if want != sum {
 		t.Errorf("expected sum %d got %d", want, sum)
+	}
+}
+
+func TestBackend(t *testing.T) {
+	r := goredis.NewBroker()
+
+	app := NewApp(
+		WithBroker(r),
+		WithLogger(log.NewJSONLogger(os.Stderr)),
+		WithBackend(r),
+	)
+
+	err := app.Delay(
+		"myproject.apps.myapp.tasks.mytask",
+		DefaultQueue,
+		2,
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	var taskID string
+
+	app.Register(
+		"myproject.apps.myapp.tasks.mytask",
+		func(ctx context.Context, p *TaskParam) error {
+			taskID = ctx.Value(ContextKeyTaskID).(string)
+
+			panic("panic")
+
+			return nil
+		},
+	)
+	if err := app.Run(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Error(err)
+	}
+
+	_, err = r.Load(taskID)
+	if err != nil {
+		t.Error(err)
 	}
 }

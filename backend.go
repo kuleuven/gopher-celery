@@ -10,7 +10,11 @@ import (
 )
 
 func WithBackend(backend Backend) Option {
-	return WithMiddlewares(func(f TaskF) TaskF {
+	return WithMiddlewares(BackendMiddleware(backend), RecoverMiddleware)
+}
+
+func BackendMiddleware(backend Backend) func(next TaskF) TaskF {
+	return func(f TaskF) TaskF {
 		return func(ctx context.Context, p *TaskParam) error {
 			if err := setResult(ctx, backend, protocol.STARTED, nil); err != nil {
 				return err
@@ -20,7 +24,7 @@ func WithBackend(backend Backend) Option {
 				return setResult(ctx, backend, status, meta)
 			})
 
-			err := call(ctx, f, p)
+			err := f(ctx, p)
 
 			if err == nil {
 				return setResult(ctx, backend, protocol.SUCCESS, p.result)
@@ -32,7 +36,7 @@ func WithBackend(backend Backend) Option {
 
 			return err
 		}
-	})
+	}
 }
 
 func setResult(ctx context.Context, backend Backend, status protocol.Status, result interface{}) error {
