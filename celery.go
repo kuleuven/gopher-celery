@@ -290,13 +290,7 @@ const (
 
 // executeTask calls the task function with args and kwargs from the message.
 // If the task panics, the stack trace is returned as an error.
-func (a *App) executeTask(ctx context.Context, m *protocol.Task) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("unexpected task error: %v: %s", r, debug.Stack())
-		}
-	}()
-
+func (a *App) executeTask(ctx context.Context, m *protocol.Task) error {
 	task := a.task[m.Name]
 
 	// Use middlewares if a client provided them.
@@ -309,5 +303,15 @@ func (a *App) executeTask(ctx context.Context, m *protocol.Task) (err error) {
 
 	p := NewTaskParam(m.Args, m.Kwargs)
 
-	return task(ctx, p)
+	return call(ctx, task, p)
+}
+
+func call(ctx context.Context, f TaskF, p *TaskParam) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("unexpected task error: %v: %s", r, debug.Stack())
+		}
+	}()
+
+	return f(ctx, p)
 }
