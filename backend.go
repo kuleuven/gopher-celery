@@ -23,7 +23,7 @@ func WithBackend(backend Backend) Option {
 			err := f(ctx, p)
 
 			if err == nil {
-				return setResult(ctx, backend, protocol.SUCCESS, "All good")
+				return setResult(ctx, backend, protocol.SUCCESS, p.result)
 			}
 
 			if err1 := setResult(ctx, backend, protocol.FAILURE, err.Error()); err1 != nil {

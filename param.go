@@ -27,6 +27,8 @@ type TaskParam struct {
 	args []interface{}
 	// kwargs are keyword arguments.
 	kwargs map[string]interface{}
+	// result can be set to return a value from the task.
+	result interface{}
 }
 
 // Args returns task's positional arguments.
@@ -57,6 +59,7 @@ func (p *TaskParam) Get(name string) (v interface{}, ok bool) {
 	}
 
 	var pos int
+
 	pos, ok = p.argNames[name]
 	if !ok || pos >= len(p.args) {
 		return nil, false
@@ -72,6 +75,7 @@ func (p *TaskParam) MustString(name string) string {
 	if !ok {
 		panic("param not found")
 	}
+
 	return v.(string)
 }
 
@@ -98,6 +102,7 @@ func (p *TaskParam) MustFloat(name string) float64 {
 	if !ok {
 		panic("param not found")
 	}
+
 	return v.(float64)
 }
 
@@ -108,5 +113,18 @@ func (p *TaskParam) MustBool(name string) bool {
 	if !ok {
 		panic("param not found")
 	}
+
 	return v.(bool)
+}
+
+// SetResult
+func (p *TaskParam) SetResult(v ...interface{}) {
+	switch len(v) {
+	case 0:
+		p.result = nil
+	case 1:
+		p.result = v[0]
+	default:
+		p.result = v
+	}
 }

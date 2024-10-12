@@ -120,6 +120,20 @@ func (a *App) Register(path string, task TaskF) {
 	a.task[path] = task
 }
 
+// Bind associates the task with given Python path.
+// For example, when "myproject.apps.myapp.tasks.mytask"
+// is seen, the taskFunc is executed.
+//
+// taskFunc must be a method that returns an error
+// as the last argument. It may contain context.Context
+// as the first argument.
+//
+// Note, the method is not concurrency safe.
+// The tasks mustn't be registered after the app starts processing tasks.
+func (a *App) Bind(path string, taskFunc interface{}) {
+	a.task[path] = Wrap(taskFunc)
+}
+
 // ApplyAsync sends a task message.
 func (a *App) ApplyAsync(path, queue string, p *AsyncParam) error {
 	m := protocol.Task{
