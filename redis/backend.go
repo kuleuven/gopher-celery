@@ -10,7 +10,19 @@ func (br *Broker) Store(key string, value []byte) error {
 	conn := br.pool.Get()
 	defer conn.Close()
 
-	_, err := conn.Do("SETEX", fmt.Sprintf("celery-task-meta-%s", key), value, 86400)
+	if err := conn.Send("SETEX", fmt.Sprintf("celery-task-meta-%s", key), value, 86400); err != nil {
+		return err
+	}
+
+	if err := conn.Send("PUBLISH", fmt.Sprintf("celery-task-meta-%s", key), value); err != nil {
+		return err
+	}
+
+	if err := conn.Flush(); err != nil {
+		return err
+	}
+
+	_, err := conn.Receive()
 
 	return err
 }
