@@ -58,8 +58,10 @@ func arguments(ctx context.Context, arguments []interface{}, taskFunc interface{
 
 	result := make([]reflect.Value, f.NumIn())
 
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+
 	for i := 0; i < f.NumIn(); i++ {
-		if i == 0 && f.In(0) == reflect.TypeOf(ctx) {
+		if f.In(i) == ctxType {
 			result[i] = reflect.ValueOf(ctx)
 
 			continue
