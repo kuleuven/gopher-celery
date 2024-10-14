@@ -179,7 +179,8 @@ func TestSerializerRegistryEncode(t *testing.T) {
 	r.uuid4 = func() string {
 		return "967ff33a-e83c-4225-99ea-1d945c62526a"
 	}
-	r.origin = "123@home"
+	r.host = "home"
+	r.pid = 123
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

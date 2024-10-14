@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,12 @@ type Task struct {
 	// If not provided the message will never expire.
 	// The message will be expired when the message is received and the expiration date has been exceeded.
 	Expires time.Time
+	// RootID is the id of the root task (useful for workflows)
+	RootID string
+	// RootID is the id of the parent task (useful for workflows)
+	ParentID string
+	// Retries is the number of retries
+	Retries int `json:"retries"`
 }
 
 // IsExpired returns true if the message is expired
@@ -59,11 +66,13 @@ type Serializer interface {
 // NewSerializerRegistry creates a registry of serializers.
 func NewSerializerRegistry() *SerializerRegistry {
 	js := NewJSONSerializer()
+
 	r := SerializerRegistry{
 		serializers: make(map[string]Serializer),
 		encoding:    make(map[string]string),
 		uuid4:       uuid.NewString,
 	}
+
 	r.Register(js, "json", "utf-8")
 	r.Register(js, "application/json", "utf-8")
 
@@ -74,7 +83,9 @@ func NewSerializerRegistry() *SerializerRegistry {
 	if host, err = os.Hostname(); err != nil {
 		host = "unknown"
 	}
-	r.origin = fmt.Sprintf("%d@%s", os.Getpid(), host)
+
+	r.host = host
+	r.pid = os.Getpid()
 
 	return &r
 }
@@ -95,7 +106,11 @@ type SerializerRegistry struct {
 	// uuid4 returns uuid v4, e.g., 0ad73c66-f4c9-4600-bd20-96746e720eed.
 	uuid4 func() string
 	// origin is a pid@host used in encoding task messages.
-	origin string
+	host string
+	pid  int
+	// clock is an internal counter used in encoding event messages.
+	clock      int
+	sync.Mutex // lock for clock
 }
 
 // Register registers a custom serializer where
@@ -113,9 +128,12 @@ type inboundMessage struct {
 }
 
 type inboundMessageV2Header struct {
-	ID      string    `json:"id"`
-	Task    string    `json:"task"`
-	Expires time.Time `json:"expires"`
+	ID       string    `json:"id"`
+	Task     string    `json:"task"`
+	Expires  time.Time `json:"expires"`
+	RootID   string    `json:"root_id"`
+	ParentID string    `json:"parent_id"`
+	Retries  int       `json:"retries"`
 }
 
 // Decode decodes the raw message and returns a task info.
@@ -142,6 +160,9 @@ func (r *SerializerRegistry) Decode(raw []byte) (*Task, error) {
 		t.ID = m.Header.ID
 		t.Name = m.Header.Task
 		t.Expires = m.Header.Expires
+		t.ParentID = m.Header.ParentID
+		t.RootID = m.Header.RootID
+		t.Retries = m.Header.Retries
 	}
 
 	ser := r.serializers[m.ContentType]
@@ -201,8 +222,8 @@ type outboundMessageV1 struct {
 
 type outboundMessageProperty struct {
 	DeliveryInfo  outboundMessageDeliveryInfo `json:"delivery_info"`
-	CorrelationID string                      `json:"correlation_id"`
-	ReplyTo       string                      `json:"reply_to"`
+	CorrelationID string                      `json:"correlation_id,omitempty"`
+	ReplyTo       string                      `json:"reply_to,omitempty"`
 	BodyEncoding  string                      `json:"body_encoding"`
 	DeliveryTag   string                      `json:"delivery_tag"`
 	DeliveryMode  int                         `json:"delivery_mode"`
@@ -253,7 +274,9 @@ type outboundMessageV2Header struct {
 	ID   string `json:"id"`
 	// RootID helps to keep track of workflows.
 	RootID string `json:"root_id"`
-	Task   string `json:"task"`
+	// ParentID is the ID of the parent task.
+	ParentID string `json:"parent_id"`
+	Task     string `json:"task"`
 	// Origin is the name of the node sending the task,
 	// '@'.join([os.getpid(), socket.gethostname()]).
 	Origin  string  `json:"origin"`
@@ -269,11 +292,13 @@ func (r *SerializerRegistry) encodeV2(body, queue, mime string, t *Task) ([]byte
 		ContentEncoding: r.encoding[mime],
 		ContentType:     mime,
 		Header: outboundMessageV2Header{
-			Lang:   "go",
-			ID:     t.ID,
-			RootID: t.ID,
-			Task:   t.Name,
-			Origin: r.origin,
+			Lang:     "go",
+			ID:       t.ID,
+			RootID:   t.RootID,
+			ParentID: t.ParentID,
+			Task:     t.Name,
+			Retries:  t.Retries,
+			Origin:   fmt.Sprintf("%d@%s", r.pid, r.host),
 		},
 		Property: outboundMessageProperty{
 			BodyEncoding:  "base64",

@@ -106,14 +106,24 @@ func WithMiddlewares(chain ...Middleware) Option {
 	}
 }
 
+var DefaultEventChannel = "celeryev"
+
+// WithEvents enables task events.
+func WithEvents(channel string) Option {
+	return func(c *Config) {
+		c.eventChannel = channel
+	}
+}
+
 // Config represents Celery settings.
 type Config struct {
-	logger     log.Logger
-	broker     Broker
-	queue      string
-	registry   *protocol.SerializerRegistry
-	mime       string
-	protocol   int
-	maxWorkers int
-	chain      Middleware
+	logger       log.Logger
+	broker       Broker
+	queue        string
+	registry     *protocol.SerializerRegistry
+	mime         string
+	protocol     int
+	maxWorkers   int
+	chain        Middleware
+	eventChannel string
 }

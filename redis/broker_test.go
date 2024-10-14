@@ -60,3 +60,12 @@ func TestReceive(t *testing.T) {
 		})
 	}
 }
+
+func TestSendFanout(t *testing.T) {
+	q := "redigoq"
+	br := NewBroker(WithReceiveTimeout(time.Second))
+
+	if err := br.SendFanout([]byte("{}"), q, "foo"); err != nil {
+		t.Fatal(err)
+	}
+}

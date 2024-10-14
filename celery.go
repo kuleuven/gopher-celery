@@ -3,7 +3,9 @@ package celery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/go-kit/log"
@@ -44,6 +46,11 @@ type Broker interface {
 	// Reject rejects a task message. It puts the message back to the queue.
 	// Note, the method is safe to call concurrently.
 	Reject(queue string, message []byte) error
+	// SendFanout puts a message to a fanout queue.
+	// Note, the method is safe to call concurrently.
+	SendFanout(msg []byte, queue string, routingKey string) error
+	// ReceiveTimeout returns the timeout in seconds.
+	ReceiveTimeout() float64
 }
 
 // Backend is responsible for storing and retrieving task results.
@@ -107,6 +114,9 @@ type App struct {
 
 	// sem is a semaphore that limits number of workers.
 	sem chan struct{}
+
+	// seen
+	seen int
 }
 
 // Register associates the task with given Python path.
@@ -210,10 +220,36 @@ func (a *App) Run(ctx context.Context) error {
 				// Release a semaphore by discarding a token.
 				defer func() { <-a.sem }()
 
-				if err := a.executeTask(ctx, msg); err != nil {
+				a.dispatch("task-started", struct {
+					ID string `json:"uuid"`
+				}{
+					ID: msg.ID,
+				})
+
+				start := time.Now()
+
+				if result, err := a.executeTask(ctx, msg); err != nil {
+					a.dispatch("task-failed", struct {
+						ID      string  `json:"uuid"`
+						Runtime float64 `json:"runtime"`
+						Result  string  `json:"result"`
+					}{
+						ID:      msg.ID,
+						Runtime: time.Since(start).Seconds(),
+						Result:  err.Error(),
+					})
+
 					level.Error(a.conf.logger).Log("msg", "task failed", "name", msg.Name, "err", err)
 				} else {
-					level.Debug(a.conf.logger).Log("msg", "task succeeded", "name", msg.Name)
+					a.dispatch("task-succeeded", struct {
+						ID      string  `json:"uuid"`
+						Runtime float64 `json:"runtime"`
+						Result  string  `json:"result"`
+					}{
+						ID:      msg.ID,
+						Runtime: time.Since(start).Seconds(),
+						Result:  python(result),
+					})
 				}
 
 				return a.conf.broker.Ack(a.conf.queue, raw)
@@ -236,6 +272,8 @@ func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
 		}
 
 		if raw == nil {
+			a.heartbeat()
+
 			continue
 		}
 
@@ -270,7 +308,104 @@ func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
 			continue
 		}
 
+		event := struct {
+			ID       string  `json:"uuid"`
+			Name     string  `json:"name"`
+			Args     string  `json:"args"`
+			Kwargs   string  `json:"kwargs"`
+			Expires  *string `json:"expires"`
+			RootID   string  `json:"root_id"`
+			ParentID string  `json:"parent_id"`
+			Retries  int     `json:"retries"`
+		}{
+			ID:       msg.ID,
+			Name:     msg.Name,
+			Args:     python(msg.Args),
+			Kwargs:   python(msg.Kwargs),
+			RootID:   msg.RootID,
+			ParentID: msg.ParentID,
+			Retries:  msg.Retries,
+		}
+
+		if !msg.Expires.IsZero() {
+			s := msg.Expires.Format(time.RFC3339)
+			event.Expires = &s
+		}
+
+		a.dispatch("task-received", event)
+		a.seen++
+
 		return raw, msg, nil
+	}
+}
+
+func python(obj interface{}) string {
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return "nil"
+	}
+
+	if data[0] == '[' {
+		data[0] = '('
+		data[len(data)-1] = ')'
+	}
+
+	return string(data)
+}
+
+func (a *App) dispatch(event string, obj interface{}) {
+	if a.conf.eventChannel == "" {
+		return
+	}
+
+	payload, err := a.conf.registry.Event(event, a.conf.eventChannel, "task.multi", obj)
+	if err != nil {
+		level.Error(a.conf.logger).Log("msg", "failed to encode event message", "event", event, "err", err)
+
+		return
+	}
+
+	if err := a.conf.broker.SendFanout(payload, a.conf.eventChannel, "task.multi"); err != nil {
+		level.Error(a.conf.logger).Log("msg", "failed to send event message", "event", event, "err", err)
+	}
+}
+
+func (a *App) heartbeat() {
+	if a.conf.eventChannel == "" {
+		return
+	}
+
+	active := len(a.sem)
+
+	obj := struct {
+		Freq             float64    `json:"freq"`
+		Active           int        `json:"active"`
+		Processed        int        `json:"processed"`
+		LoadAverage      [3]float64 `json:"loadavg"`
+		SoftwareID       string     `json:"sw_ident"`
+		SoftwareVersion  string     `json:"sw_ver"`
+		SoftwarePlatform string     `json:"sw_sys"`
+	}{
+		Freq:      a.conf.broker.ReceiveTimeout(),
+		Active:    active,
+		Processed: a.seen - active,
+		LoadAverage: [3]float64{
+			0, 1, 2,
+		},
+		SoftwareID:       "go",
+		SoftwareVersion:  runtime.Version(),
+		SoftwarePlatform: runtime.GOOS,
+	}
+
+	payload, err := a.conf.registry.Event("worker-heartbeat", a.conf.eventChannel, "worker.heartbeat", obj)
+	if err != nil {
+		level.Error(a.conf.logger).Log("msg", "failed to encode heartbeat message", "err", err)
+
+		return
+	}
+
+	if err := a.conf.broker.SendFanout(payload, a.conf.eventChannel, "worker.heartbeat"); err != nil {
+		level.Error(a.conf.logger).Log("msg", "failed to send heartbeat message", "err", err)
 	}
 }
 
@@ -289,7 +424,7 @@ const (
 
 // executeTask calls the task function with args and kwargs from the message.
 // If the task panics, the stack trace is returned as an error.
-func (a *App) executeTask(ctx context.Context, m *protocol.Task) error {
+func (a *App) executeTask(ctx context.Context, m *protocol.Task) (interface{}, error) {
 	task := a.task[m.Name]
 
 	// Use middlewares if a client provided them.
@@ -302,5 +437,7 @@ func (a *App) executeTask(ctx context.Context, m *protocol.Task) error {
 
 	p := NewTaskParam(m.Args, m.Kwargs)
 
-	return task(ctx, p)
+	err := task(ctx, p)
+
+	return p.result, err
 }

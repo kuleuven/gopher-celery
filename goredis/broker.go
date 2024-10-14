@@ -80,13 +80,19 @@ type Broker struct {
 	restored       map[string][]string
 }
 
-// Send inserts the specified message at the head of the queue using LPUSH command.
+// Send inserts the specified message at the head of the topic queue using LPUSH command.
 // Note, the method is safe to call concurrently.
 func (br *Broker) Send(m []byte, q string) error {
 	return br.pool.LPush(br.ctx, q, m).Err()
 }
 
-// Receive fetches a Celery task message from a tail of one of the queues in Redis.
+// SendFanout inserts the specified message at the head of the fanout queue using PUBLISH command.
+// Note, the method is safe to call concurrently.
+func (br *Broker) SendFanout(m []byte, q string, routingKey string) error {
+	return br.pool.Publish(br.ctx, fmt.Sprintf("/%d.%s/%s", br.pool.Options().DB, q, routingKey), m).Err()
+}
+
+// Receive fetches a Celery task message from a tail of one of the topic queues in Redis.
 // After a timeout it returns nil, nil.
 //
 // Note, the method is not concurrency safe.
@@ -161,4 +167,8 @@ func (br *Broker) Reject(queue string, message []byte) error {
 	_, err := pipe.Exec(br.ctx)
 
 	return err
+}
+
+func (br *Broker) ReceiveTimeout() float64 {
+	return float64(br.receiveTimeout)
 }

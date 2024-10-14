@@ -36,7 +36,7 @@ func TestExecuteTaskPanic(t *testing.T) {
 	}
 
 	want := "unexpected task error"
-	err := app.executeTask(context.Background(), &m)
+	_, err := app.executeTask(context.Background(), &m)
 	if !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("expected %q got %q", want, err)
 	}
@@ -107,7 +107,7 @@ func TestExecuteTaskMiddlewares(t *testing.T) {
 				},
 			)
 
-			err := app.executeTask(ctx, &m)
+			_, err := app.executeTask(ctx, &m)
 			if !strings.HasPrefix(err.Error(), tc.want) {
 				t.Errorf("expected %q got %q", tc.want, err)
 			}
