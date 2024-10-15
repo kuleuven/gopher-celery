@@ -35,7 +35,7 @@ func (r *SerializerRegistry) Event(eventType, queue, routingKey string, obj inte
 	_, offset := now.Zone()
 
 	base := &event{
-		Hostname:  fmt.Sprintf("go@%s", r.host),
+		Hostname:  fmt.Sprintf("gopher@%s", r.host),
 		Type:      eventType,
 		Clock:     r.Clock(),
 		Timestamp: now.Unix(),
@@ -69,7 +69,7 @@ func (r *SerializerRegistry) Event(eventType, queue, routingKey string, obj inte
 		ContentEncoding: r.encoding["application/json"],
 		ContentType:     "application/json",
 		Header: outboundMessageEventHeader{
-			Hostname: fmt.Sprintf("go@%s", r.host),
+			Hostname: fmt.Sprintf("gopher@%s", r.host),
 		},
 		Property: outboundMessageProperty{
 			BodyEncoding: "base64",

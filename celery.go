@@ -28,6 +28,9 @@ type Middleware func(next TaskF) TaskF
 // DefaultQueue is the default queue name used by the app.
 var DefaultQueue = "celery"
 
+// DefaultHeatbeat is the default heartbeat interval used by the app.
+var DefaultHeatbeat = 15
+
 // Broker is responsible for receiving and sending task messages.
 // For example, it knows how to read a message from a given queue in Redis.
 // The messages can be in defferent formats depending on Celery protocol version.
@@ -49,8 +52,6 @@ type Broker interface {
 	// SendFanout puts a message to a fanout queue.
 	// Note, the method is safe to call concurrently.
 	SendFanout(msg []byte, queue string, routingKey string) error
-	// ReceiveTimeout returns the timeout in seconds.
-	ReceiveTimeout() float64
 }
 
 // Backend is responsible for storing and retrieving task results.
@@ -86,6 +87,7 @@ func NewApp(options ...Option) *App {
 			protocol:   protocol.V2,
 			maxWorkers: DefaultMaxWorkers,
 			queue:      DefaultQueue,
+			heartbeat:  DefaultHeatbeat,
 		},
 		task: make(map[string]TaskF),
 	}
@@ -196,6 +198,8 @@ func (a *App) Run(ctx context.Context) error {
 
 	msgs := make(chan *protocol.Task, 1)
 
+	g.Go(a.heartbeatLoop)
+
 	g.Go(func() error {
 		defer close(msgs)
 
@@ -272,8 +276,6 @@ func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
 		}
 
 		if raw == nil {
-			a.heartbeat()
-
 			continue
 		}
 
@@ -370,11 +372,25 @@ func (a *App) dispatch(event string, obj interface{}) {
 	}
 }
 
-func (a *App) heartbeat() {
+func (a *App) heartbeatLoop() error {
 	if a.conf.eventChannel == "" {
-		return
+		return nil
 	}
 
+	timer := time.NewTimer(time.Duration(a.conf.heartbeat) * time.Second)
+
+	defer timer.Stop()
+
+	for range timer.C {
+		if err := a.heartbeatOnce(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (a *App) heartbeatOnce() error {
 	active := len(a.sem)
 
 	obj := struct {
@@ -386,7 +402,7 @@ func (a *App) heartbeat() {
 		SoftwareVersion  string     `json:"sw_ver"`
 		SoftwarePlatform string     `json:"sw_sys"`
 	}{
-		Freq:      a.conf.broker.ReceiveTimeout(),
+		Freq:      float64(a.conf.heartbeat),
 		Active:    active,
 		Processed: a.seen - active,
 		LoadAverage: [3]float64{
@@ -399,14 +415,10 @@ func (a *App) heartbeat() {
 
 	payload, err := a.conf.registry.Event("worker-heartbeat", a.conf.eventChannel, "worker.heartbeat", obj)
 	if err != nil {
-		level.Error(a.conf.logger).Log("msg", "failed to encode heartbeat message", "err", err)
-
-		return
+		return err
 	}
 
-	if err := a.conf.broker.SendFanout(payload, a.conf.eventChannel, "worker.heartbeat"); err != nil {
-		level.Error(a.conf.logger).Log("msg", "failed to send heartbeat message", "err", err)
-	}
+	return a.conf.broker.SendFanout(payload, a.conf.eventChannel, "worker.heartbeat")
 }
 
 type contextKey int

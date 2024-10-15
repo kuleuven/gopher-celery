@@ -9,10 +9,6 @@ import (
 	"github.com/marselester/gopher-celery/protocol"
 )
 
-func WithBackend(backend Backend) Option {
-	return WithMiddlewares(BackendMiddleware(backend), RecoverMiddleware)
-}
-
 func BackendMiddleware(backend Backend) func(next TaskF) TaskF {
 	return func(f TaskF) TaskF {
 		return func(ctx context.Context, p *TaskParam) error {

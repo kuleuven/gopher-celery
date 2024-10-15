@@ -230,7 +230,3 @@ func (br *Broker) Reject(queue string, message []byte) error {
 
 	return err
 }
-
-func (br *Broker) ReceiveTimeout() float64 {
-	return float64(br.receiveTimeout)
-}

@@ -115,6 +115,18 @@ func WithEvents(channel string) Option {
 	}
 }
 
+// WithHeartbeat sets the heartbeat interval in seconds.
+func WithHeartbeat(interval int) Option {
+	return func(c *Config) {
+		c.heartbeat = interval
+	}
+}
+
+// WithBackend enables a celery Backend and the recover middleware.
+func WithBackend(backend Backend) Option {
+	return WithMiddlewares(BackendMiddleware(backend), RecoverMiddleware)
+}
+
 // Config represents Celery settings.
 type Config struct {
 	logger       log.Logger
@@ -126,4 +138,5 @@ type Config struct {
 	maxWorkers   int
 	chain        Middleware
 	eventChannel string
+	heartbeat    int
 }
