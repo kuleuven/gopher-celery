@@ -342,7 +342,6 @@ func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
 		}
 
 		a.dispatch("task-received", event)
-		a.seen++
 
 		return raw, msg, nil
 	}
