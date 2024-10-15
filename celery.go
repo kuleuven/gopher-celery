@@ -202,7 +202,9 @@ func (a *App) Run(ctx context.Context) error {
 
 	msgs := make(chan *protocol.Task, 1)
 
-	g.Go(a.heartbeatLoop)
+	g.Go(func() error {
+		return a.heartbeatLoop(ctx)
+	})
 
 	g.Go(func() error {
 		defer close(msgs)
@@ -379,7 +381,7 @@ func (a *App) dispatch(event string, obj interface{}) {
 	}
 }
 
-func (a *App) heartbeatLoop() error {
+func (a *App) heartbeatLoop(ctx context.Context) error {
 	if a.conf.eventChannel == "" {
 		return nil
 	}
@@ -388,20 +390,24 @@ func (a *App) heartbeatLoop() error {
 
 	defer timer.Stop()
 
-	for range timer.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+
 		if err := a.heartbeatOnce(); err != nil {
 			return err
 		}
 	}
-
-	return nil
 }
 
 const si_load_shift = 16
 
 func (a *App) heartbeatOnce() error {
-	processed := a.stopped.Load()
-	active := a.started.Load() - processed
+	stopped := a.stopped.Load()
+	started := a.started.Load()
 
 	var info syscall.Sysinfo_t
 
@@ -419,9 +425,9 @@ func (a *App) heartbeatOnce() error {
 		SoftwareVersion  string     `json:"sw_ver"`
 		SoftwarePlatform string     `json:"sw_sys"`
 	}{
-		Freq:      float64(a.conf.heartbeat) * 10,
-		Active:    active,
-		Processed: processed,
+		Freq:      float64(a.conf.heartbeat),
+		Active:    started - stopped,
+		Processed: stopped,
 		LoadAverage: [3]float64{
 			math.Round(float64(info.Loads[0])/float64(1<<si_load_shift)*100) / 100,
 			math.Round(float64(info.Loads[1])/float64(1<<si_load_shift)*100) / 100,
