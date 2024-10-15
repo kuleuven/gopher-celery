@@ -55,6 +55,8 @@ type Broker interface {
 	// SendFanout puts a message to a fanout queue.
 	// Note, the method is safe to call concurrently.
 	SendFanout(msg []byte, queue string, routingKey string) error
+	// SubscribeFanout subscribes to a fanout queue.
+	SubscribeFanout(ctx context.Context, queue string, routingKey string, ch chan<- []byte) error
 }
 
 // Backend is responsible for storing and retrieving task results.
@@ -200,15 +202,11 @@ func (a *App) Run(ctx context.Context) error {
 
 	level.Debug(a.conf.logger).Log("msg", "observing queue", "queue", a.conf.queue)
 
-	msgs := make(chan *protocol.Task, 1)
-
 	g.Go(func() error {
 		return a.heartbeatLoop(ctx)
 	})
 
 	g.Go(func() error {
-		defer close(msgs)
-
 		// One goroutine fetching and decoding tasks from queues
 		// shouldn't be a bottleneck since the worker goroutines
 		// usually take seconds/minutes to complete.
@@ -386,6 +384,10 @@ func (a *App) heartbeatLoop(ctx context.Context) error {
 		return nil
 	}
 
+	if err := a.heartbeatOnce("online"); err != nil {
+		return err
+	}
+
 	timer := time.NewTicker(time.Duration(a.conf.heartbeat) * time.Second)
 
 	defer timer.Stop()
@@ -393,11 +395,15 @@ func (a *App) heartbeatLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			if err := a.heartbeatOnce("offline"); err != nil {
+				return err
+			}
+
 			return ctx.Err()
 		case <-timer.C:
 		}
 
-		if err := a.heartbeatOnce(); err != nil {
+		if err := a.heartbeatOnce("heartbeat"); err != nil {
 			return err
 		}
 	}
@@ -405,7 +411,7 @@ func (a *App) heartbeatLoop(ctx context.Context) error {
 
 const si_load_shift = 16
 
-func (a *App) heartbeatOnce() error {
+func (a *App) heartbeatOnce(t string) error {
 	stopped := a.stopped.Load()
 	started := a.started.Load()
 
@@ -438,12 +444,12 @@ func (a *App) heartbeatOnce() error {
 		SoftwarePlatform: runtime.GOOS,
 	}
 
-	payload, err := a.conf.registry.Event("worker-heartbeat", a.conf.eventChannel, "worker.heartbeat", obj)
+	payload, err := a.conf.registry.Event("worker-"+t, a.conf.eventChannel, "worker."+t, obj)
 	if err != nil {
 		return err
 	}
 
-	return a.conf.broker.SendFanout(payload, a.conf.eventChannel, "worker.heartbeat")
+	return a.conf.broker.SendFanout(payload, a.conf.eventChannel, "worker."+t)
 }
 
 type contextKey int

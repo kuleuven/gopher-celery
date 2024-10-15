@@ -89,7 +89,13 @@ func (br *Broker) Send(m []byte, q string) error {
 // SendFanout inserts the specified message at the head of the fanout queue using PUBLISH command.
 // Note, the method is safe to call concurrently.
 func (br *Broker) SendFanout(m []byte, q string, routingKey string) error {
-	return br.pool.Publish(br.ctx, fmt.Sprintf("/%d.%s/%s", br.pool.Options().DB, q, routingKey), m).Err()
+	name := fmt.Sprintf("/%d.%s/%s", br.pool.Options().DB, q, routingKey)
+
+	if routingKey == "" {
+		name = fmt.Sprintf("/%d.%s", br.pool.Options().DB, q)
+	}
+
+	return br.pool.Publish(br.ctx, name, m).Err()
 }
 
 // Receive fetches a Celery task message from a tail of one of the topic queues in Redis.
@@ -167,4 +173,25 @@ func (br *Broker) Reject(queue string, message []byte) error {
 	_, err := pipe.Exec(br.ctx)
 
 	return err
+}
+
+func (br *Broker) SubscribeFanout(ctx context.Context, queue string, routingKey string, ch chan<- []byte) error {
+	name := fmt.Sprintf("/%d.%s/%s", br.pool.Options().DB, queue, routingKey)
+
+	if routingKey == "" {
+		name = fmt.Sprintf("/%d.%s", br.pool.Options().DB, queue)
+	}
+
+	subscriber := br.pool.PSubscribe(ctx, name)
+
+	defer subscriber.Close()
+
+	for {
+		msg, err := subscriber.ReceiveMessage(ctx)
+		if err != nil {
+			return err
+		}
+
+		ch <- []byte(msg.Payload)
+	}
 }

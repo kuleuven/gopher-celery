@@ -4,6 +4,7 @@ package redis
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strconv"
 	"time"
@@ -74,8 +75,6 @@ func NewBroker(options ...BrokerOption) *Broker {
 				return redis.DialURL("redis://localhost")
 			},
 		}
-
-		//br.db = 0
 	}
 
 	return &br
@@ -105,30 +104,48 @@ func (br *Broker) Send(m []byte, q string) error {
 // SendFanout inserts the specified message at the head of the fanout queue using PUBLISH command.
 // Note, the method is safe to call concurrently.
 func (br *Broker) SendFanout(m []byte, q string, routingKey string) error {
+	if err := br.fetchDB(); err != nil {
+		return err
+	}
+
 	conn := br.pool.Get()
 	defer conn.Close()
 
-	// Get the DB number
-	if br.db < 0 {
-		reply, err := redis.Bytes(conn.Do("CLIENT", "INFO"))
-		if err != nil {
-			return err
-		}
+	name := fmt.Sprintf("/%d.%s/%s", br.db, q, routingKey)
 
-		parts := bytes.Split(reply, []byte(" "))
+	if routingKey == "" {
+		name = fmt.Sprintf("/%d.%s", br.db, q)
+	}
 
-		for _, part := range parts {
-			if bytes.HasPrefix(part, []byte("db=")) {
-				br.db, _ = strconv.Atoi(string(part[3:]))
+	_, err := conn.Do("PUBLISH", name, m)
 
-				break
-			}
+	return err
+}
+
+func (br *Broker) fetchDB() error {
+	if br.db >= 0 {
+		return nil
+	}
+
+	conn := br.pool.Get()
+	defer conn.Close()
+
+	reply, err := redis.Bytes(conn.Do("CLIENT", "INFO"))
+	if err != nil {
+		return err
+	}
+
+	parts := bytes.Split(reply, []byte(" "))
+
+	for _, part := range parts {
+		if bytes.HasPrefix(part, []byte("db=")) {
+			br.db, _ = strconv.Atoi(string(part[3:]))
+
+			return nil
 		}
 	}
 
-	_, err := conn.Do("PUBLISH", fmt.Sprintf("/%d.%s/%s", br.db, q, routingKey), m)
-
-	return err
+	return fmt.Errorf("unable to fetch DB number")
 }
 
 // Receive fetches a Celery task message from a tail of one of the topic queues in Redis.
@@ -229,4 +246,36 @@ func (br *Broker) Reject(queue string, message []byte) error {
 	_, err := conn.Receive()
 
 	return err
+}
+
+func (br *Broker) SubscribeFanout(ctx context.Context, queue string, routingKey string, ch chan<- []byte) error {
+	if err := br.fetchDB(); err != nil {
+		return err
+	}
+
+	conn := br.pool.Get()
+	defer conn.Close()
+
+	psc := redis.PubSubConn{Conn: conn}
+
+	name := fmt.Sprintf("/%d.%s/%s", br.db, queue, routingKey)
+
+	if routingKey == "" {
+		name = fmt.Sprintf("/%d.%s", br.db, queue)
+	}
+
+	if err := psc.Subscribe(name); err != nil {
+		return err
+	}
+
+	defer psc.Unsubscribe()
+
+	for {
+		switch v := psc.ReceiveContext(ctx).(type) {
+		case error:
+			return v
+		case redis.Message:
+			ch <- v.Data
+		}
+	}
 }
