@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"runtime"
 	"sync/atomic"
 	"syscall"
@@ -400,7 +401,7 @@ const si_load_shift = 16
 
 func (a *App) heartbeatOnce() error {
 	processed := a.stopped.Load()
-	active := processed - a.started.Load()
+	active := a.started.Load() - processed
 
 	var info syscall.Sysinfo_t
 
@@ -418,13 +419,13 @@ func (a *App) heartbeatOnce() error {
 		SoftwareVersion  string     `json:"sw_ver"`
 		SoftwarePlatform string     `json:"sw_sys"`
 	}{
-		Freq:      float64(a.conf.heartbeat),
+		Freq:      float64(a.conf.heartbeat) * 10,
 		Active:    active,
 		Processed: processed,
 		LoadAverage: [3]float64{
-			float64(info.Loads[0]) / float64(1<<si_load_shift),
-			float64(info.Loads[1]) / float64(1<<si_load_shift),
-			float64(info.Loads[2]) / float64(1<<si_load_shift),
+			math.Round(float64(info.Loads[0])/float64(1<<si_load_shift)*100) / 100,
+			math.Round(float64(info.Loads[1])/float64(1<<si_load_shift)*100) / 100,
+			math.Round(float64(info.Loads[2])/float64(1<<si_load_shift)*100) / 100,
 		},
 		SoftwareID:       "go",
 		SoftwareVersion:  runtime.Version(),
