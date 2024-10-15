@@ -10,6 +10,7 @@ import (
 
 // TaskEvent represents a task event message
 type event struct {
+	Hostname  string `json:"hostname"`
 	Type      string `json:"type"`
 	Clock     int    `json:"clock"`
 	Timestamp int64  `json:"timestamp"`
@@ -34,10 +35,11 @@ func (r *SerializerRegistry) Event(eventType, queue, routingKey string, obj inte
 	_, offset := now.Zone()
 
 	base := &event{
+		Hostname:  r.host,
 		Type:      eventType,
 		Clock:     r.Clock(),
 		Timestamp: now.Unix(),
-		UTCOffset: offset / 3600,
+		UTCOffset: -offset / 3600,
 		Pid:       r.pid,
 	}
 
