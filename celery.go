@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-kit/log"
@@ -117,8 +119,9 @@ type App struct {
 	// sem is a semaphore that limits number of workers.
 	sem chan struct{}
 
-	// seen
-	seen int
+	// counters for stats
+	started atomic.Int32
+	stopped atomic.Int32
 }
 
 // Register associates the task with given Python path.
@@ -230,6 +233,8 @@ func (a *App) Run(ctx context.Context) error {
 					ID: msg.ID,
 				})
 
+				a.started.Add(1)
+
 				start := time.Now()
 
 				if result, err := a.executeTask(ctx, msg); err != nil {
@@ -255,6 +260,8 @@ func (a *App) Run(ctx context.Context) error {
 						Result:  python(result),
 					})
 				}
+
+				a.stopped.Add(1)
 
 				return a.conf.broker.Ack(a.conf.queue, raw)
 			})
@@ -390,13 +397,23 @@ func (a *App) heartbeatLoop() error {
 	return nil
 }
 
+const si_load_shift = 16
+
 func (a *App) heartbeatOnce() error {
-	active := len(a.sem)
+	processed := a.stopped.Load()
+	active := processed - a.started.Load()
+
+	var info syscall.Sysinfo_t
+
+	err := syscall.Sysinfo(&info)
+	if err != nil {
+		return err
+	}
 
 	obj := struct {
 		Freq             float64    `json:"freq"`
-		Active           int        `json:"active"`
-		Processed        int        `json:"processed"`
+		Active           int32      `json:"active"`
+		Processed        int32      `json:"processed"`
 		LoadAverage      [3]float64 `json:"loadavg"`
 		SoftwareID       string     `json:"sw_ident"`
 		SoftwareVersion  string     `json:"sw_ver"`
@@ -404,9 +421,11 @@ func (a *App) heartbeatOnce() error {
 	}{
 		Freq:      float64(a.conf.heartbeat),
 		Active:    active,
-		Processed: a.seen - active,
+		Processed: processed,
 		LoadAverage: [3]float64{
-			0, 1, 2,
+			float64(info.Loads[0]) / float64(1<<si_load_shift),
+			float64(info.Loads[1]) / float64(1<<si_load_shift),
+			float64(info.Loads[2]) / float64(1<<si_load_shift),
 		},
 		SoftwareID:       "go",
 		SoftwareVersion:  runtime.Version(),
