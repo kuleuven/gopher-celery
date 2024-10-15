@@ -386,7 +386,7 @@ func (a *App) heartbeatLoop(ctx context.Context) error {
 		return nil
 	}
 
-	timer := time.NewTimer(time.Duration(a.conf.heartbeat) * time.Second)
+	timer := time.NewTicker(time.Duration(a.conf.heartbeat) * time.Second)
 
 	defer timer.Stop()
 
