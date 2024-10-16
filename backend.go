@@ -32,12 +32,19 @@ func BackendMiddleware(backend Backend) func(next TaskF) TaskF {
 				return setResult(ctx, backend, protocol.SUCCESS, p.result)
 			}
 
-			if err1 := setResult(ctx, backend, protocol.FAILURE, err.Error()); err1 != nil {
+			if err1 := setResult(ctx, backend, protocol.FAILURE, packError(err.Error())); err1 != nil {
 				err = fmt.Errorf("%w, %s", err, err1)
 			}
 
 			return err
 		}
+	}
+}
+
+func packError(err string) interface{} {
+	return map[string]interface{}{
+		"exc_type":    "GopherError",
+		"exc_message": err,
 	}
 }
 
