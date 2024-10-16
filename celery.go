@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -561,6 +562,19 @@ func (a *App) executeTask(ctx context.Context, m *protocol.Task) (interface{}, e
 
 	ctx = context.WithValue(ctx, ContextKeyTaskName, m.Name)
 	ctx = context.WithValue(ctx, ContextKeyTaskID, m.ID)
+	ctx = context.WithValue(ctx, ContextKeyUpdateStateCallback, func(status protocol.Status, meta map[string]interface{}) error {
+		result, err := json.Marshal(meta)
+
+		a.dispatch("task-"+strings.ToLower(string(status)), struct {
+			ID     string `json:"uuid"`
+			Result string `json:"result"`
+		}{
+			ID:     m.ID,
+			Result: string(result),
+		})
+
+		return err
+	})
 
 	p := NewTaskParam(m.Args, m.Kwargs)
 

@@ -16,7 +16,13 @@ func BackendMiddleware(backend Backend) func(next TaskF) TaskF {
 				return err
 			}
 
+			prev := ctx.Value(ContextKeyUpdateStateCallback).(func(status protocol.Status, meta map[string]interface{}) error)
+
 			ctx = context.WithValue(ctx, ContextKeyUpdateStateCallback, func(status protocol.Status, meta map[string]interface{}) error {
+				if err := prev(status, meta); err != nil {
+					return err
+				}
+
 				return setResult(ctx, backend, status, meta)
 			})
 
