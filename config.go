@@ -131,6 +131,13 @@ func WithEvents(channel string) Option {
 	}
 }
 
+// WithEventWorkerIdentifier sets the worker identifier.
+func WithEventWorkerIdentifier(id string) Option {
+	return func(c *Config) {
+		c.registry.SetID(id)
+	}
+}
+
 // WithIngestQueue enables the use of an ingest queue.
 // This queue is used to receive tasks early and immediately
 // send the task-received event, instead of waiting for a

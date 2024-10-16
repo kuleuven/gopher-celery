@@ -86,6 +86,7 @@ func NewSerializerRegistry() *SerializerRegistry {
 
 	r.host = host
 	r.pid = os.Getpid()
+	r.id = "gopher"
 
 	return &r
 }
@@ -108,6 +109,8 @@ type SerializerRegistry struct {
 	// origin is a pid@host used in encoding task messages.
 	host string
 	pid  int
+	// worker hostname is id@host used in encoding event messages.
+	id string
 	// clock is an internal counter used in encoding event messages.
 	clock      int
 	sync.Mutex // lock for clock
@@ -119,6 +122,11 @@ type SerializerRegistry struct {
 func (r *SerializerRegistry) Register(serializer Serializer, mime, encoding string) {
 	r.serializers[mime] = serializer
 	r.encoding[mime] = encoding
+}
+
+// SetID sets the worker id used in encoding event messages.
+func (r *SerializerRegistry) SetID(id string) {
+	r.id = id
 }
 
 type inboundMessage struct {
