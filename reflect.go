@@ -18,6 +18,9 @@ var ErrLastReturnValueMustBeError = errors.New("last return value must be an err
 // The result is passed to the task's SetResult method.
 func Wrap(taskFunc interface{}) TaskF {
 	return func(ctx context.Context, p *TaskParam) error {
+		ctx = context.WithValue(ctx, ContextKeyParamArgs, p.args)
+		ctx = context.WithValue(ctx, ContextKeyParamKwargs, p.kwargs)
+
 		args, err := arguments(ctx, p.args, taskFunc)
 		if err != nil {
 			return err
@@ -73,10 +76,6 @@ func arguments(ctx context.Context, arguments []interface{}, taskFunc interface{
 
 		result[i] = cast(arguments[0], f.In(i))
 		arguments = arguments[1:]
-	}
-
-	if len(arguments) > 0 {
-		return nil, ErrWrongNumberOfArguments
 	}
 
 	return result, nil

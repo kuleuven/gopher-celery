@@ -548,6 +548,14 @@ const (
 
 	// ContextKeyUpdateStateCallback is a context key to retrieve a callback to update the state.
 	ContextKeyUpdateStateCallback
+
+	// ContextKeyParamArgs is a context key to access task args that weren't passed to the binded function.
+	// Only applies for functions registered with Bind()
+	ContextKeyParamArgs
+
+	// ContextKeyParamKwargs is a context key to access task kwargs.
+	// Only applies for functions registered with Bind()
+	ContextKeyParamKwargs
 )
 
 // executeTask calls the task function with args and kwargs from the message.
