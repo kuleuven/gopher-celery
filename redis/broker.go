@@ -4,7 +4,6 @@ package redis
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strconv"
 	"time"
@@ -160,15 +159,7 @@ func (br *Broker) Receive(queue string) ([]byte, error) {
 			return item, err
 		}
 
-		res, err := redis.Bytes(conn.Do(
-			"BLMOVE",
-			redis.Args{}.Add(queue, fmt.Sprintf("%s-unacked-%d", queue, br.workerID), "LEFT", "RIGHT").Add(br.receiveTimeout)...,
-		))
-		if err == redis.ErrNil {
-			return nil, nil
-		}
-
-		return res, err
+		return br.Move(queue, fmt.Sprintf("%s-unacked-%d", queue, br.workerID))
 	}
 
 	// See the discussion regarding timeout and Context cancellation
@@ -210,6 +201,21 @@ func (br *Broker) MaybeRestore(queue string) ([]byte, error) {
 	return msg, nil
 }
 
+func (br *Broker) Move(queueIn string, queueOut string) ([]byte, error) {
+	conn := br.pool.Get()
+	defer conn.Close()
+
+	res, err := redis.Bytes(conn.Do(
+		"BLMOVE",
+		redis.Args{}.Add(queueIn, queueOut, "LEFT", "RIGHT").Add(br.receiveTimeout)...,
+	))
+	if err == redis.ErrNil {
+		return nil, nil
+	}
+
+	return res, err
+}
+
 func (br *Broker) Ack(queue string, message []byte) error {
 	if !br.ack {
 		return nil
@@ -246,36 +252,4 @@ func (br *Broker) Reject(queue string, message []byte) error {
 	_, err := conn.Receive()
 
 	return err
-}
-
-func (br *Broker) SubscribeFanout(ctx context.Context, queue string, routingKey string, ch chan<- []byte) error {
-	if err := br.fetchDB(); err != nil {
-		return err
-	}
-
-	conn := br.pool.Get()
-	defer conn.Close()
-
-	psc := redis.PubSubConn{Conn: conn}
-
-	name := fmt.Sprintf("/%d.%s/%s", br.db, queue, routingKey)
-
-	if routingKey == "" {
-		name = fmt.Sprintf("/%d.%s", br.db, queue)
-	}
-
-	if err := psc.Subscribe(name); err != nil {
-		return err
-	}
-
-	defer psc.Unsubscribe()
-
-	for {
-		switch v := psc.ReceiveContext(ctx).(type) {
-		case error:
-			return v
-		case redis.Message:
-			ch <- v.Data
-		}
-	}
 }

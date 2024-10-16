@@ -108,14 +108,7 @@ func (br *Broker) Receive(queue string) ([]byte, error) {
 			return item, err
 		}
 
-		res := br.pool.BLMove(br.ctx, queue, fmt.Sprintf("%s-unacked-%d", queue, br.workerID), "LEFT", "RIGHT", br.receiveTimeout)
-		if err := res.Err(); err == redis.Nil {
-			return nil, nil
-		} else if err != nil {
-			return nil, err
-		}
-
-		return []byte(res.Val()), nil
+		return br.Move(queue, fmt.Sprintf("%s-unacked-%d", queue, br.workerID))
 	}
 
 	res := br.pool.BRPop(br.ctx, br.receiveTimeout, queue)
@@ -153,6 +146,17 @@ func (br *Broker) MaybeRestore(queue string) ([]byte, error) {
 	return []byte(msg), nil
 }
 
+func (br *Broker) Move(queueIn string, queueOut string) ([]byte, error) {
+	res := br.pool.BLMove(br.ctx, queueIn, queueOut, "LEFT", "RIGHT", br.receiveTimeout)
+	if err := res.Err(); err == redis.Nil {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	return []byte(res.Val()), nil
+}
+
 func (br *Broker) Ack(queue string, message []byte) error {
 	if !br.ack {
 		return nil
@@ -173,25 +177,4 @@ func (br *Broker) Reject(queue string, message []byte) error {
 	_, err := pipe.Exec(br.ctx)
 
 	return err
-}
-
-func (br *Broker) SubscribeFanout(ctx context.Context, queue string, routingKey string, ch chan<- []byte) error {
-	name := fmt.Sprintf("/%d.%s/%s", br.pool.Options().DB, queue, routingKey)
-
-	if routingKey == "" {
-		name = fmt.Sprintf("/%d.%s", br.pool.Options().DB, queue)
-	}
-
-	subscriber := br.pool.PSubscribe(ctx, name)
-
-	defer subscriber.Close()
-
-	for {
-		msg, err := subscriber.ReceiveMessage(ctx)
-		if err != nil {
-			return err
-		}
-
-		ch <- []byte(msg.Payload)
-	}
 }

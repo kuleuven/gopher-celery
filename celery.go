@@ -45,6 +45,10 @@ type Broker interface {
 	// It blocks until there is a message available for consumption.
 	// Note, the method is not concurrency safe.
 	Receive(queue string) ([]byte, error)
+	// Move moves a message from one queue to another.
+	// It blocks until there is a message available for move.
+	// Note, the method is safe to call concurrently.
+	Move(queueFrom, queueTo string) ([]byte, error)
 	// Ack acknowledges a task message. If messages are not acked,
 	// they will be redelivered after the visibility timeout.
 	// Note, the method is safe to call concurrently.
@@ -55,8 +59,6 @@ type Broker interface {
 	// SendFanout puts a message to a fanout queue.
 	// Note, the method is safe to call concurrently.
 	SendFanout(msg []byte, queue string, routingKey string) error
-	// SubscribeFanout subscribes to a fanout queue.
-	SubscribeFanout(ctx context.Context, queue string, routingKey string, ch chan<- []byte) error
 }
 
 // Backend is responsible for storing and retrieving task results.
@@ -206,10 +208,24 @@ func (a *App) Run(ctx context.Context) error {
 		return a.heartbeatLoop(ctx)
 	})
 
+	// One goroutine fetching and decoding tasks from queues
+	// shouldn't be a bottleneck since the worker goroutines
+	// usually take seconds/minutes to complete.
+
 	g.Go(func() error {
-		// One goroutine fetching and decoding tasks from queues
-		// shouldn't be a bottleneck since the worker goroutines
-		// usually take seconds/minutes to complete.
+		if a.conf.ingestQueue == "" {
+			return nil
+		}
+
+		for {
+			_, _, err := a.ingestTask(ctx)
+			if err != nil {
+				return err
+			}
+		}
+	})
+
+	g.Go(func() error {
 		for {
 			select {
 			// Acquire a semaphore by sending a token.
@@ -219,7 +235,7 @@ func (a *App) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 
-			raw, msg, err := a.receive(ctx)
+			raw, msg, err := a.receiveTask(ctx)
 			if err != nil {
 				return err
 			}
@@ -272,7 +288,71 @@ func (a *App) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
-func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
+func (a *App) ingestTask(ctx context.Context) ([]byte, *protocol.Task, error) {
+	for {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+
+		raw, err := a.conf.broker.Move(a.conf.ingestQueue, a.conf.queue)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to ingest a raw task message: %w", err)
+		}
+
+		if raw == nil {
+			continue
+		}
+
+		msg, err := a.conf.registry.Decode(raw)
+		if err != nil {
+			level.Error(a.conf.logger).Log("msg", "failed to decode task message", "rawmsg", raw, "err", err)
+
+			continue
+		}
+
+		if a.task[msg.Name] == nil {
+			level.Debug(a.conf.logger).Log("msg", "unregistered task", "name", msg.Name)
+
+			continue
+		}
+
+		if msg.IsExpired() {
+			level.Debug(a.conf.logger).Log("msg", "task message expired", "name", msg.Name)
+
+			continue
+		}
+
+		event := struct {
+			ID       string  `json:"uuid"`
+			Name     string  `json:"name"`
+			Args     string  `json:"args"`
+			Kwargs   string  `json:"kwargs"`
+			Expires  *string `json:"expires"`
+			RootID   string  `json:"root_id"`
+			ParentID string  `json:"parent_id"`
+			Retries  int     `json:"retries"`
+		}{
+			ID:       msg.ID,
+			Name:     msg.Name,
+			Args:     python(msg.Args),
+			Kwargs:   python(msg.Kwargs),
+			RootID:   msg.RootID,
+			ParentID: msg.ParentID,
+			Retries:  msg.Retries,
+		}
+
+		if !msg.Expires.IsZero() {
+			s := msg.Expires.Format(time.RFC3339)
+			event.Expires = &s
+		}
+
+		a.dispatch("task-received", event)
+
+		return raw, msg, nil
+	}
+}
+
+func (a *App) receiveTask(ctx context.Context) ([]byte, *protocol.Task, error) {
 	for {
 		if ctx.Err() != nil {
 			return nil, nil, ctx.Err()
@@ -317,32 +397,6 @@ func (a *App) receive(ctx context.Context) ([]byte, *protocol.Task, error) {
 
 			continue
 		}
-
-		event := struct {
-			ID       string  `json:"uuid"`
-			Name     string  `json:"name"`
-			Args     string  `json:"args"`
-			Kwargs   string  `json:"kwargs"`
-			Expires  *string `json:"expires"`
-			RootID   string  `json:"root_id"`
-			ParentID string  `json:"parent_id"`
-			Retries  int     `json:"retries"`
-		}{
-			ID:       msg.ID,
-			Name:     msg.Name,
-			Args:     python(msg.Args),
-			Kwargs:   python(msg.Kwargs),
-			RootID:   msg.RootID,
-			ParentID: msg.ParentID,
-			Retries:  msg.Retries,
-		}
-
-		if !msg.Expires.IsZero() {
-			s := msg.Expires.Format(time.RFC3339)
-			event.Expires = &s
-		}
-
-		a.dispatch("task-received", event)
 
 		return raw, msg, nil
 	}

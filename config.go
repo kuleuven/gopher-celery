@@ -1,6 +1,8 @@
 package celery
 
 import (
+	"fmt"
+
 	"github.com/go-kit/log"
 
 	"github.com/marselester/gopher-celery/protocol"
@@ -71,7 +73,19 @@ func WithLogger(logger log.Logger) Option {
 // WithQueue sets the name of the Celery queue.
 func WithQueue(name string) Option {
 	return func(c *Config) {
+		if name == "" {
+			name = DefaultQueue
+		}
+
 		c.queue = name
+
+		// If events are enabled, work with an ingest queue.
+		// This way, the task-received event can be sent early
+		// and does not block until a worker has free capacity.
+		if c.ingestQueue != "" {
+			c.ingestQueue = name
+			c.queue = fmt.Sprintf("%s-recv", name)
+		}
 	}
 }
 
@@ -109,9 +123,25 @@ func WithMiddlewares(chain ...Middleware) Option {
 var DefaultEventChannel = "celeryev"
 
 // WithEvents enables task events.
+// The name of the Celery queue where events are sent, should be provided.
+// If no name is provided, events are disabled.
 func WithEvents(channel string) Option {
 	return func(c *Config) {
 		c.eventChannel = channel
+
+		// If events are enabled, work with an ingest queue.
+		// This way, the task-received event can be sent early
+		// and does not block until a worker has free capacity.
+		if channel != "" && c.ingestQueue == "" {
+			c.ingestQueue = c.queue
+			c.queue = fmt.Sprintf("%s-recv", c.queue)
+		}
+
+		// If events are disabled, disable the ingest queue if needed.
+		if channel == "" && c.ingestQueue != "" {
+			c.queue = c.ingestQueue
+			c.ingestQueue = ""
+		}
 	}
 }
 
@@ -132,6 +162,7 @@ type Config struct {
 	logger       log.Logger
 	broker       Broker
 	queue        string
+	ingestQueue  string
 	registry     *protocol.SerializerRegistry
 	mime         string
 	protocol     int
