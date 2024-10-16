@@ -398,6 +398,36 @@ func (a *App) receiveTask(ctx context.Context) ([]byte, *protocol.Task, error) {
 			continue
 		}
 
+		if a.conf.ingestQueue != "" {
+			return raw, msg, nil
+		}
+
+		event := struct {
+			ID       string  `json:"uuid"`
+			Name     string  `json:"name"`
+			Args     string  `json:"args"`
+			Kwargs   string  `json:"kwargs"`
+			Expires  *string `json:"expires"`
+			RootID   string  `json:"root_id"`
+			ParentID string  `json:"parent_id"`
+			Retries  int     `json:"retries"`
+		}{
+			ID:       msg.ID,
+			Name:     msg.Name,
+			Args:     python(msg.Args),
+			Kwargs:   python(msg.Kwargs),
+			RootID:   msg.RootID,
+			ParentID: msg.ParentID,
+			Retries:  msg.Retries,
+		}
+
+		if !msg.Expires.IsZero() {
+			s := msg.Expires.Format(time.RFC3339)
+			event.Expires = &s
+		}
+
+		a.dispatch("task-received", event)
+
 		return raw, msg, nil
 	}
 }

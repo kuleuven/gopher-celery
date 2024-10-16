@@ -128,20 +128,18 @@ var DefaultEventChannel = "celeryev"
 func WithEvents(channel string) Option {
 	return func(c *Config) {
 		c.eventChannel = channel
+	}
+}
 
-		// If events are enabled, work with an ingest queue.
-		// This way, the task-received event can be sent early
-		// and does not block until a worker has free capacity.
-		if channel != "" && c.ingestQueue == "" {
-			c.ingestQueue = c.queue
-			c.queue = fmt.Sprintf("%s-recv", c.queue)
-		}
-
-		// If events are disabled, disable the ingest queue if needed.
-		if channel == "" && c.ingestQueue != "" {
-			c.queue = c.ingestQueue
-			c.ingestQueue = ""
-		}
+// WithIngestQueue enables the use of an ingest queue.
+// This queue is used to receive tasks early and immediately
+// send the task-received event, instead of waiting for a
+// worker that has free capacity. Only useful in combination
+// with WithEvents.
+func WithIngestQueue() Option {
+	return func(c *Config) {
+		c.ingestQueue = c.queue
+		c.queue = fmt.Sprintf("%s-recv", c.queue)
 	}
 }
 
