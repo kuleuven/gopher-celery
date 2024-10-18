@@ -8,6 +8,7 @@ import (
 	"math"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -128,6 +129,9 @@ type App struct {
 	// counters for stats
 	started atomic.Int32
 	stopped atomic.Int32
+
+	// eventLock makes sure the clock is linear increasing for events
+	eventLock sync.Mutex
 }
 
 // Register associates the task with given Python path.
@@ -452,6 +456,10 @@ func (a *App) dispatch(event string, obj interface{}) {
 		return
 	}
 
+	a.eventLock.Lock()
+
+	defer a.eventLock.Unlock()
+
 	payload, err := a.conf.registry.Event(event, a.conf.eventChannel, "task.multi", obj)
 	if err != nil {
 		level.Error(a.conf.logger).Log("msg", "failed to encode event message", "event", event, "err", err)
@@ -528,6 +536,10 @@ func (a *App) heartbeatOnce(t string) error {
 		SoftwareVersion:  runtime.Version(),
 		SoftwarePlatform: runtime.GOOS,
 	}
+
+	a.eventLock.Lock()
+
+	defer a.eventLock.Unlock()
 
 	payload, err := a.conf.registry.Event("worker-"+t, a.conf.eventChannel, "worker."+t, obj)
 	if err != nil {
